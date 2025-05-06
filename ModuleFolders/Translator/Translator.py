@@ -695,35 +695,42 @@ class Translator(Base):
         from ModuleFolders.FileOutputer.BaseWriter import TranslationOutputConfig, OutputConfig
 
         # 直接修改默认配置
-        self.info(f"准备修改文件后缀，添加语言代码: {language_suffix}")
+        self.info(f"为语言设置文件后缀: {language_suffix}")
 
         # 获取默认配置生成函数
         get_writer_default_config = self.file_writer._get_writer_default_config
 
+        # 检查是否已经修改过配置生成函数
+        if hasattr(self, '_original_get_writer_default_config'):
+            # 已经修改过，直接更新语言后缀
+            self._current_language_suffix = language_suffix
+            return
+
         # 保存原始函数
-        original_get_writer_default_config = get_writer_default_config
+        self._original_get_writer_default_config = get_writer_default_config
+        # 保存当前语言后缀
+        self._current_language_suffix = language_suffix
 
         # 定义新的配置生成函数
         def new_get_writer_default_config(project_type, output_path, input_path):
             # 调用原始函数获取默认配置
-            config = original_get_writer_default_config(project_type, output_path, input_path)
+            config = self._original_get_writer_default_config(project_type, output_path, input_path)
 
             try:
                 # 修改翻译输出配置的后缀
                 if hasattr(config, "translated_config") and config.translated_config:
-                    original_suffix = config.translated_config.name_suffix
-                    # 如果后缀中已经包含语言代码，则不再添加
-                    if language_suffix not in original_suffix:
-                        config.translated_config.name_suffix = f"{language_suffix}{original_suffix}"
-                        self.info(f"修改文件后缀: {original_suffix} -> {config.translated_config.name_suffix}")
+                    # 获取默认后缀（通常是"_translated"）
+                    default_suffix = "_translated"
 
-                # 特殊处理某些项目类型
-                if project_type == "SrtWriter":
-                    if hasattr(config, "translated_config") and config.translated_config:
-                        original_suffix = config.translated_config.name_suffix
-                        if language_suffix not in original_suffix:
-                            config.translated_config.name_suffix = f"{language_suffix}{original_suffix}"
-                            self.info(f"修改SRT文件后缀: {original_suffix} -> {config.translated_config.name_suffix}")
+                    # 设置新的后缀，只包含当前语言代码
+                    new_suffix = f"{self._current_language_suffix}{default_suffix}"
+                    config.translated_config.name_suffix = new_suffix
+                    # 特殊处理某些项目类型
+                    if project_type == "SrtWriter":
+                        # SRT文件的默认后缀是".translated"
+                        default_suffix = ".translated"
+                        new_suffix = f"{self._current_language_suffix}{default_suffix}"
+                        config.translated_config.name_suffix = new_suffix
             except Exception as e:
                 self.warning(f"修改文件后缀时出错: {e}")
 
