@@ -26,6 +26,7 @@ from UserInterface.Setting.ProjectSettingsPage import ProjectSettingsPage
 from UserInterface.Setting.BasicSettingsPage import BasicSettingsPage
 from UserInterface.Setting.AdvanceSettingsPage import AdvanceSettingsPage
 from UserInterface.Setting.PluginsSettingsPage import PluginsSettingsPage
+from UserInterface.Setting.MultiLanguageTranslationPage import MultiLanguageTranslationPage
 
 from UserInterface.DRSetting.FlowDesignPage import FlowDesignPage
 from UserInterface.DRSetting.FlowBasicSettingsPage import FlowBasicSettingsPage
@@ -296,6 +297,8 @@ class AppFluentWindow(FluentWindow, Base): #主窗口
         self.addSubInterface(self.advance_settings_page, FluentIcon.ALBUM, self.tra("高级设置"), NavigationItemPosition.SCROLL)
         self.plugins_settings_page = PluginsSettingsPage("plugins_settings_page", self, plugin_manager)
         self.addSubInterface(self.plugins_settings_page, FluentIcon.COMMAND_PROMPT, self.tra("插件设置"), NavigationItemPosition.SCROLL)
+        self.multi_language_translation_page = MultiLanguageTranslationPage("multi_language_translation_page", self)
+        self.addSubInterface(self.multi_language_translation_page, FluentIcon.LANGUAGE, self.tra("多语言翻译"), NavigationItemPosition.SCROLL)
         self.prompt_optimization_navigation_item = BaseNavigationItem("prompt_optimization_navigation_item", self)
         self.addSubInterface(self.prompt_optimization_navigation_item, FluentIcon.BOOK_SHELF, self.tra("提示词设置"), NavigationItemPosition.SCROLL)
         self.system_prompt_page = SystemPromptPage("system_prompt_page", self)

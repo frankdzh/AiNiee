@@ -1,0 +1,18 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Python: AiNiee",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "${workspaceFolder}/AiNiee.py",
+            "console": "integratedTerminal",
+            "justMyCode": false,
+            "env": {
+                "PYTHONPATH": "${workspaceFolder}",
+                "PATH": "D:/Program Files/MiniConda/envs/ainiee;D:/Program Files/MiniConda/envs/ainiee/Library/bin;${env:PATH}"
+            },
+            "python": "D:/Program Files/MiniConda/envs/ainiee/python.exe"
+        }
+    ]
+}

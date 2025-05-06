@@ -1,0 +1,64 @@
+{
+  "PART_1": {
+    "多语言批量翻译": {
+      "简中": "多语言批量翻译",
+      "繁中": "多語言批量翻譯",
+      "English": "Multi-Language Translation",
+      "日本語": "多言語一括翻訳"
+    },
+    "启用此功能后，可以选择多个目标语言，一次性将原文翻译成所有选定的语言": {
+      "简中": "启用此功能后，可以选择多个目标语言，一次性将原文翻译成所有选定的语言",
+      "繁中": "啟用此功能後，可以選擇多個目標語言，一次性將原文翻譯成所有選定的語言",
+      "English": "After enabling this feature, you can select multiple target languages and translate the source text into all selected languages at once",
+      "日本語": "この機能を有効にすると、複数の対象言語を選択し、原文をすべての選択した言語に一度に翻訳できます"
+    },
+    "选择目标语言": {
+      "简中": "选择目标语言",
+      "繁中": "選擇目標語言",
+      "English": "Select Target Languages",
+      "日本語": "対象言語を選択"
+    },
+    "操作": {
+      "简中": "操作",
+      "繁中": "操作",
+      "English": "Operations",
+      "日本語": "操作"
+    },
+    "开始多语言翻译": {
+      "简中": "开始多语言翻译",
+      "繁中": "開始多語言翻譯",
+      "English": "Start Multi-Language Translation",
+      "日本語": "多言語翻訳を開始"
+    },
+    "警告": {
+      "简中": "警告",
+      "繁中": "警告",
+      "English": "Warning",
+      "日本語": "警告"
+    },
+    "请至少选择一种目标语言": {
+      "简中": "请至少选择一种目标语言",
+      "繁中": "請至少選擇一種目標語言",
+      "English": "Please select at least one target language",
+      "日本語": "少なくとも1つの対象言語を選択してください"
+    },
+    "确定": {
+      "简中": "确定",
+      "繁中": "確定",
+      "English": "OK",
+      "日本語": "確認"
+    },
+    "已开始多语言批量翻译任务": {
+      "简中": "已开始多语言批量翻译任务",
+      "繁中": "已開始多語言批量翻譯任務",
+      "English": "Multi-language batch translation task has started",
+      "日本語": "多言語一括翻訳タスクを開始しました"
+    },
+    "多语言批量翻译任务已完成": {
+      "简中": "多语言批量翻译任务已完成",
+      "繁中": "多語言批量翻譯任務已完成",
+      "English": "Multi-language batch translation task has been completed",
+      "日本語": "多言語一括翻訳タスクが完了しました"
+    }
+  }
+}

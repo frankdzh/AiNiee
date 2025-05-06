@@ -59,7 +59,9 @@ class CacheManager(Base):
             }
         }
         """
-        path = os.path.join(self.save_to_file_require_path, "cache", "AinieeCacheData.json")
+        # 使用带后缀的缓存文件名
+        cache_file_name = f"AinieeCacheData{self.save_to_file_suffix}.json"
+        path = os.path.join(self.save_to_file_require_path, "cache", cache_file_name)
         with self.file_lock:
             os.makedirs(os.path.dirname(path), exist_ok=True)
             with open(path, "w", encoding="utf-8") as writer:
@@ -76,9 +78,15 @@ class CacheManager(Base):
                 self.save_to_file_require_flag = False
 
     # 请求保存缓存到文件
-    def require_save_to_file(self, output_path: str) -> None:
-        """请求保存缓存"""
+    def require_save_to_file(self, output_path: str, file_suffix: str = "") -> None:
+        """
+        请求保存缓存
+        Args:
+            output_path: 输出路径
+            file_suffix: 文件后缀，用于区分不同语言的缓存文件
+        """
         self.save_to_file_require_path = output_path
+        self.save_to_file_suffix = file_suffix
         self.save_to_file_require_flag = True
 
     # 从项目中加载
@@ -86,9 +94,15 @@ class CacheManager(Base):
         self.project = data
 
     # 从缓存文件读取数据
-    def load_from_file(self, output_path: str) -> None:
-        """从文件加载数据"""
-        path = os.path.join(output_path, "cache", "AinieeCacheData.json")
+    def load_from_file(self, output_path: str, file_suffix: str = "") -> None:
+        """
+        从文件加载数据
+        Args:
+            output_path: 输出路径
+            file_suffix: 文件后缀，用于区分不同语言的缓存文件
+        """
+        cache_file_name = f"AinieeCacheData{file_suffix}.json"
+        path = os.path.join(output_path, "cache", cache_file_name)
         with self.file_lock:
             if os.path.isfile(path):
                 self.project = self.read_from_file(path)
@@ -252,4 +266,4 @@ class CacheManager(Base):
                 file_paths.append(file.storage_path)  # 添加文件路径记录
 
         # 返回结果列表
-        return chunks, previous_chunks, file_paths 
+        return chunks, previous_chunks, file_paths

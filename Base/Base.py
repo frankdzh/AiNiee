@@ -36,6 +36,10 @@ class Event():
     GLOSS_TRANSLATION_START = 700                           # 术语表翻译 开始
     GLOSS_TRANSLATION_DONE = 701                            # 术语表翻译 完成
 
+    MULTI_LANGUAGE_TRANSLATION_START = 800                  # 多语言翻译 开始
+    MULTI_LANGUAGE_TRANSLATION_UPDATE = 810                 # 多语言翻译 更新
+    MULTI_LANGUAGE_TRANSLATION_DONE = 820                   # 多语言翻译 完成
+
 # 软件运行状态列表
 class Status():
 
@@ -44,6 +48,7 @@ class Status():
     STOPING = 4000                                  # 停止中
     API_TEST = 2000                                 # 接口测试中
     GLOSS_TRANSLATION = 5000                        # 术语表翻译中
+    MULTI_LANGUAGE_TRANSLATING = 6000               # 多语言翻译中
 
 
 class Base():
@@ -99,7 +104,7 @@ class Base():
         for filename in os.listdir(folder_path):
             if filename.endswith(".json"):
                 filepath = os.path.join(folder_path, filename)
-                try: 
+                try:
                     with open(filepath, 'r', encoding='utf-8') as f:
                         data = json.load(f)
                         for top_level_key in data:
@@ -261,19 +266,19 @@ class Base():
                 old[k] = v
 
         return old
-    
+
 
     # 用默认值更新并加载配置文件
     def load_config_from_default(self) -> None:
         # 1. 加载已有配置
         config = self.load_config()  # 从文件读取用户配置
-        
+
         # 2. 合并默认配置
         config = self.fill_config(
             old=config,  # 用户现有配置
             new=getattr(self, "default", {})  # 当前类的默认配置
         )
-        
+
         # 3. 返回合并结果
         return config
 

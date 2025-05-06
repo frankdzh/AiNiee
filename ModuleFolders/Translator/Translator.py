@@ -1,3 +1,4 @@
+import os
 import time
 import threading
 import concurrent.futures
@@ -45,6 +46,9 @@ class Translator(Base):
         self.request_limiter = RequestLimiter()
         self.file_reader = file_reader
         self.file_writer = file_writer
+        self.multi_language_translation_in_progress = False
+        self.multi_language_translation_languages = []
+        self.current_multi_language_index = 0
 
         # 注册事件
         self.subscribe(Base.EVENT.TRANSLATION_STOP, self.translation_stop)
@@ -52,6 +56,24 @@ class Translator(Base):
         self.subscribe(Base.EVENT.TRANSLATION_MANUAL_EXPORT, self.translation_manual_export)
         self.subscribe(Base.EVENT.TRANSLATION_CONTINUE_CHECK, self.translation_continue_check)
         self.subscribe(Base.EVENT.APP_SHUT_DOWN, self.app_shut_down)
+
+        # 注册多语言翻译事件
+        try:
+            from UserInterface.Setting.MultiLanguageTranslationPage import MultiLanguageTranslationPage
+            # 检查多语言翻译页面是否存在
+            def check_multi_language_page():
+                for window in self.get_app_windows():
+                    if hasattr(window, 'multi_language_translation_page'):
+                        page = window.multi_language_translation_page
+                        if isinstance(page, MultiLanguageTranslationPage):
+                            return True
+                return False
+
+            # 检查页面是否存在，如果不存在则在1秒后重试
+            if not check_multi_language_page():
+                threading.Timer(1.0, check_multi_language_page).start()
+        except ImportError:
+            self.warning("多语言翻译页面模块未找到，多语言翻译功能将不可用")
 
     # 应用关闭事件
     def app_shut_down(self, event: int, data: dict) -> None:
@@ -61,6 +83,27 @@ class Translator(Base):
     def translation_stop(self, event: int, data: dict) -> None:
         # 设置运行状态为停止中
         Base.work_status = Base.STATUS.STOPING
+
+        # 如果正在进行多语言翻译，也停止它
+        if self.multi_language_translation_in_progress:
+            self.multi_language_translation_in_progress = False
+            self.info("多语言批量翻译任务已停止")
+
+            # 重置多语言翻译状态
+            self.multi_language_translation_languages = []
+            self.current_multi_language_index = 0
+
+            # 恢复原始目标语言
+            if hasattr(self, 'original_target_language'):
+                config = self.load_config()
+                config["target_language"] = self.original_target_language
+                self.save_config(config)
+
+            # 触发多语言翻译完成事件
+            self.emit(Base.EVENT.MULTI_LANGUAGE_TRANSLATION_DONE, {
+                "success": False,
+                "message": "多语言批量翻译任务已停止"
+            })
 
         def target() -> None:
             while True:
@@ -78,7 +121,7 @@ class Translator(Base):
     def translation_start(self, event: int, data: dict) -> None:
         threading.Thread(
             target = self.translation_start_target,
-            args = (data.get("continue_status"),),
+            args = (data.get("continue_status"), False),
         ).start()
 
     # 翻译结果手动导出事件
@@ -121,7 +164,18 @@ class Translator(Base):
         # 只有翻译状态为 无任务 时才执行检查逻辑，其他情况直接返回默认值
         if Base.work_status == Base.STATUS.IDLE:
             config = self.load_config()
-            self.cache_manager.load_from_file(config.get("label_output_path", ""))
+            output_path = config.get("label_output_path", "")
+            cache_file_suffix = ""
+
+            # 如果是多语言翻译模式，为每种语言创建不同的缓存文件
+            if config.get("multi_language_translation_switch", False) and config.get("selected_languages", []):
+                # 获取当前翻译的语言
+                current_language = config.get("target_language", "")
+                if current_language:
+                    # 获取语言代码后缀
+                    cache_file_suffix = self.get_language_code_suffix(current_language)
+
+            self.cache_manager.load_from_file(output_path, cache_file_suffix)
             continue_status = self.cache_manager.get_continue_status()
 
         self.emit(Base.EVENT.TRANSLATION_CONTINUE_CHECK_DONE, {
@@ -129,7 +183,21 @@ class Translator(Base):
         })
 
     # 翻译主流程
-    def translation_start_target(self, continue_status: bool) -> None:
+    def translation_start_target(self, continue_status: bool, is_multi_language: bool = False) -> None:
+        self.info(f"进入 translation_start_target 方法 - continue_status: {continue_status}, is_multi_language: {is_multi_language}, 当前状态: {Base.work_status}")
+
+        # 确保当前状态为 空闲
+        if Base.work_status != Base.STATUS.IDLE and continue_status == False and not is_multi_language:
+            self.info(f"当前状态不是空闲，且不是继续翻译或多语言翻译模式，退出方法")
+            return None
+
+        # 检查是否启用了多语言翻译（仅在非多语言翻译模式下检查）
+        if not continue_status and not is_multi_language and self.prepare_multi_language_translation():
+            # 如果启用了多语言翻译，开始翻译第一个语言
+            self.info(f"启用了多语言翻译，开始翻译第一个语言")
+            self.translate_next_language()
+            return
+
         # 设置内部状态（用于判断翻译任务是否实际在执行）
         self.translating = True
 
@@ -143,7 +211,7 @@ class Translator(Base):
         self.config.prepare_for_translation()
 
         # 配置请求线程数
-        self.config.thread_counts_setting()  # 需要在平台信息配置后面，依赖前面的数值 
+        self.config.thread_counts_setting()  # 需要在平台信息配置后面，依赖前面的数值
 
         # 配置请求限制器
         self.request_limiter.set_limit(self.config.tpm_limit, self.config.rpm_limit)
@@ -153,9 +221,9 @@ class Translator(Base):
         self.info(f"正在读取输入文件夹中的文件 ...")
         try:
             # 继续翻译时，直接读取缓存文件
-            if continue_status == True: 
+            if continue_status == True:
                 self.cache_manager.load_from_file(self.config.label_output_path)
-            
+
             # 初开始翻译
             else:
                 # 读取输入文件夹的文件，生成缓存
@@ -172,7 +240,7 @@ class Translator(Base):
             self.translating = False # 更改状态
             self.error("翻译项目数据载入失败 ... 请检查是否正确设置项目类型与输入文件夹 ... ", e)
             return None
-        
+
         # 检查数据是否为空
         if self.cache_manager.get_item_count() == 0:
             self.translating = False # 更改状态
@@ -309,7 +377,7 @@ class Translator(Base):
                     system = PromptBuilderThink.build_system(self.config, s_lang)
                 self.print("")
                 if system:
-                    self.info(f"本次任务使用以下基础提示词：\n{system}\n") 
+                    self.info(f"本次任务使用以下基础提示词：\n{system}\n")
 
             else:
                 self.info(f"第一次请求的接口 - {self.config.platforms.get(self.config.request_a_platform_settings, {}).get("name", "未知")}")
@@ -351,13 +419,29 @@ class Translator(Base):
             self.print("")
 
         # 写入文件
+        output_path = self.config.label_output_path
+
+        # 如果是多语言翻译模式，为当前语言设置特定的文件后缀
+        if self.multi_language_translation_in_progress:
+            # 获取当前翻译的语言
+            current_language_index = self.current_multi_language_index - 1
+            if current_language_index >= 0 and current_language_index < len(self.multi_language_translation_languages):
+                current_language = self.multi_language_translation_languages[current_language_index]
+                # 获取语言代码后缀
+                language_code_suffix = self.get_language_code_suffix(current_language)
+
+                # 修改文件后缀
+                self.modify_file_suffix(language_code_suffix)
+
+                self.info(f"为语言 {current_language} 设置文件后缀: {language_code_suffix}")
+
         self.file_writer.output_translated_content(
             self.cache_manager.project,
-            self.config.label_output_path,
+            output_path,
             self.config.label_input_path,
         )
         self.print("")
-        self.info(f"翻译结果已保存至 {self.config.label_output_path} 目录 ...")
+        self.info(f"翻译结果已保存至 {output_path} 目录 ...")
         self.print("")
 
         # 重置内部状态（正常完成翻译）
@@ -366,6 +450,22 @@ class Translator(Base):
         # 触发翻译停止完成的事件
         self.emit(Base.EVENT.TRANSLATION_STOP_DONE, {})
         self.plugin_manager.broadcast_event("translation_completed", self.config, self.cache_manager.project)
+
+        # 如果是多语言翻译模式，检查是否需要继续翻译下一个语言
+        if self.multi_language_translation_in_progress:
+            self.info(f"多语言翻译状态检查 - 进行中: {self.multi_language_translation_in_progress}, 当前索引: {self.current_multi_language_index}, 总语言数: {len(self.multi_language_translation_languages)}")
+
+            if self.current_multi_language_index < len(self.multi_language_translation_languages):
+                # 输出日志
+                self.info(f"当前语言翻译完成，准备翻译下一个语言: {self.multi_language_translation_languages[self.current_multi_language_index]}")
+
+                # 直接开始下一个语言的翻译，不使用定时器
+                self.info(f"直接开始下一个语言的翻译...")
+
+                # 创建一个新的线程来执行下一个语言的翻译
+                threading.Thread(target=self.translate_next_language).start()
+            else:
+                self.info(f"所有语言已翻译完成，不再继续翻译")
 
     # 执行简繁转换
     def convert_simplified_and_traditional(self, preset: str, cache_list: Iterator[CacheItem]):
@@ -396,12 +496,241 @@ class Translator(Base):
                 stats_dict = self.project_status_data.to_dict()
 
             # 请求保存缓存文件
-            self.cache_manager.require_save_to_file(self.config.label_output_path)
+            output_path = self.config.label_output_path
+            cache_file_suffix = ""
+
+            # 如果是多语言翻译模式，为每种语言创建不同的缓存文件
+            if self.multi_language_translation_in_progress:
+                # 获取当前翻译的语言
+                current_language_index = self.current_multi_language_index - 1
+                if current_language_index >= 0 and current_language_index < len(self.multi_language_translation_languages):
+                    current_language = self.multi_language_translation_languages[current_language_index]
+                    # 获取语言代码后缀
+                    cache_file_suffix = self.get_language_code_suffix(current_language)
+
+            self.cache_manager.require_save_to_file(output_path, cache_file_suffix)
 
             # 触发翻译进度更新事件
             self.emit(Base.EVENT.TRANSLATION_UPDATE, stats_dict)
         except Exception as e:
             self.error(f"翻译任务错误 ... {e}", e if self.is_debug() else None)
+
+    # 获取应用窗口列表
+    def get_app_windows(self):
+        """获取应用中的所有窗口实例"""
+        from PyQt5.QtWidgets import QApplication
+        return QApplication.topLevelWidgets()
+
+    # 检查并准备多语言翻译
+    def prepare_multi_language_translation(self) -> bool:
+        """
+        检查是否启用了多语言翻译，并准备相关设置
+        Returns:
+            bool: 是否启用了多语言翻译
+        """
+        self.info("进入 prepare_multi_language_translation 方法")
+        config = self.load_config()
+
+        # 检查是否启用了多语言翻译
+        if not config.get("multi_language_translation_switch", False):
+            self.info("多语言翻译未启用")
+            return False
+
+        # 获取选中的语言列表
+        languages = config.get("selected_languages", [])
+        self.info(f"选中的语言列表: {languages}")
+
+        if not languages:
+            self.warning("已启用多语言翻译，但未选择任何目标语言")
+            return False
+
+        # 保存当前配置中的目标语言
+        self.original_target_language = config.get("target_language", "chinese_simplified")
+        self.info(f"原始目标语言: {self.original_target_language}")
+
+        # 设置多语言翻译状态
+        self.multi_language_translation_in_progress = True
+        self.multi_language_translation_languages = languages.copy()  # 使用副本，避免引用问题
+        self.current_multi_language_index = 0
+        self.info(f"设置多语言翻译状态 - 进行中: {self.multi_language_translation_in_progress}, 语言列表: {self.multi_language_translation_languages}, 当前索引: {self.current_multi_language_index}")
+
+        # 设置全局状态为多语言翻译中
+        Base.work_status = Base.STATUS.MULTI_LANGUAGE_TRANSLATING
+        self.info(f"设置全局状态为多语言翻译中: {Base.work_status}")
+
+        # 触发多语言翻译开始事件
+        self.emit(Base.EVENT.MULTI_LANGUAGE_TRANSLATION_START, {
+            "languages": languages,
+            "total": len(languages)
+        })
+
+        self.info(f"多语言批量翻译已启动，将依次翻译以下语言: {', '.join(languages)}")
+        return True
+
+    # 翻译下一个语言
+    def translate_next_language(self) -> None:
+        """翻译多语言列表中的下一个语言"""
+        self.info(f"进入 translate_next_language 方法 - 进行中: {self.multi_language_translation_in_progress}, 当前索引: {self.current_multi_language_index}, 总语言数: {len(self.multi_language_translation_languages)}")
+
+        if not self.multi_language_translation_in_progress:
+            self.info("多语言翻译未在进行中，退出方法")
+            return
+
+        if self.current_multi_language_index >= len(self.multi_language_translation_languages):
+            # 所有语言翻译完成
+            self.multi_language_translation_in_progress = False
+            self.info("多语言批量翻译任务已完成")
+
+            # 重置多语言翻译状态
+            self.multi_language_translation_languages = []
+            self.current_multi_language_index = 0
+
+            # 恢复原始目标语言
+            if hasattr(self, 'original_target_language'):
+                config = self.load_config()
+                config["target_language"] = self.original_target_language
+                self.save_config(config)
+
+            # 恢复全局状态为空闲
+            Base.work_status = Base.STATUS.IDLE
+
+            # 触发多语言翻译完成事件
+            self.emit(Base.EVENT.MULTI_LANGUAGE_TRANSLATION_DONE, {
+                "success": True,
+                "message": "多语言批量翻译任务已完成"
+            })
+            return
+
+        try:
+            # 获取当前要翻译的语言
+            current_language = self.multi_language_translation_languages[self.current_multi_language_index]
+            self.info(f"当前要翻译的语言: {current_language}, 索引: {self.current_multi_language_index}")
+
+            # 更新配置中的目标语言
+            config = self.load_config()
+            config["target_language"] = current_language
+            self.save_config(config)
+            self.info(f"已更新配置中的目标语言为: {current_language}")
+
+            # 更新索引，为下一次翻译做准备
+            self.current_multi_language_index += 1
+            self.info(f"已更新索引为: {self.current_multi_language_index}")
+
+            # 触发多语言翻译更新事件
+            self.emit(Base.EVENT.MULTI_LANGUAGE_TRANSLATION_UPDATE, {
+                "current_index": self.current_multi_language_index,
+                "total": len(self.multi_language_translation_languages),
+                "current_language": current_language
+            })
+
+            # 开始翻译当前语言
+            self.info(f"开始翻译第 {self.current_multi_language_index}/{len(self.multi_language_translation_languages)} 个语言: {current_language}")
+
+            # 设置全局状态为多语言翻译中
+            Base.work_status = Base.STATUS.MULTI_LANGUAGE_TRANSLATING
+            self.info(f"已设置全局状态为多语言翻译中: {Base.work_status}")
+
+            # 开始翻译
+            self.info(f"调用 translation_start_target 方法开始翻译...")
+            self.translation_start_target(False, True)
+        except Exception as e:
+            self.error(f"翻译下一个语言时出错: {e}")
+            # 尝试恢复并继续翻译
+            if self.multi_language_translation_in_progress and self.current_multi_language_index < len(self.multi_language_translation_languages):
+                self.info(f"尝试恢复并继续翻译下一个语言...")
+                threading.Timer(5.0, self.translate_next_language).start()
+
+    # 获取语言的显示名称
+    def get_language_display_name(self, language_code: str) -> str:
+        """
+        获取语言的显示名称
+        Args:
+            language_code: 语言代码
+        Returns:
+            语言的显示名称
+        """
+        language_display_names = {
+            "chinese_simplified": "简体中文",
+            "chinese_traditional": "繁体中文",
+            "english": "英语",
+            "japanese": "日语",
+            "korean": "韩语",
+            "russian": "俄语",
+            "german": "德语",
+            "french": "法语",
+            "spanish": "西班牙语",
+        }
+        return language_display_names.get(language_code, language_code)
+
+    # 获取语言的代码后缀
+    def get_language_code_suffix(self, language_code: str) -> str:
+        """
+        获取语言的代码后缀
+        Args:
+            language_code: 语言代码
+        Returns:
+            语言的代码后缀
+        """
+        language_code_suffixes = {
+            "chinese_simplified": "_zh",
+            "chinese_traditional": "_cht",
+            "english": "_en",
+            "japanese": "_jp",
+            "korean": "_kr",
+            "russian": "_ru",
+            "german": "_de",
+            "french": "_fr",
+            "spanish": "_es",
+        }
+        return language_code_suffixes.get(language_code, f"_{language_code}")
+
+    # 修改文件后缀
+    def modify_file_suffix(self, language_suffix: str) -> None:
+        """
+        修改文件后缀，为每种语言生成不同的输出文件名
+        Args:
+            language_suffix: 语言后缀
+        """
+        # 获取当前的文件输出配置
+        from ModuleFolders.FileOutputer.BaseWriter import TranslationOutputConfig, OutputConfig
+
+        # 直接修改默认配置
+        self.info(f"准备修改文件后缀，添加语言代码: {language_suffix}")
+
+        # 获取默认配置生成函数
+        get_writer_default_config = self.file_writer._get_writer_default_config
+
+        # 保存原始函数
+        original_get_writer_default_config = get_writer_default_config
+
+        # 定义新的配置生成函数
+        def new_get_writer_default_config(project_type, output_path, input_path):
+            # 调用原始函数获取默认配置
+            config = original_get_writer_default_config(project_type, output_path, input_path)
+
+            try:
+                # 修改翻译输出配置的后缀
+                if hasattr(config, "translated_config") and config.translated_config:
+                    original_suffix = config.translated_config.name_suffix
+                    # 如果后缀中已经包含语言代码，则不再添加
+                    if language_suffix not in original_suffix:
+                        config.translated_config.name_suffix = f"{language_suffix}{original_suffix}"
+                        self.info(f"修改文件后缀: {original_suffix} -> {config.translated_config.name_suffix}")
+
+                # 特殊处理某些项目类型
+                if project_type == "SrtWriter":
+                    if hasattr(config, "translated_config") and config.translated_config:
+                        original_suffix = config.translated_config.name_suffix
+                        if language_suffix not in original_suffix:
+                            config.translated_config.name_suffix = f"{language_suffix}{original_suffix}"
+                            self.info(f"修改SRT文件后缀: {original_suffix} -> {config.translated_config.name_suffix}")
+            except Exception as e:
+                self.warning(f"修改文件后缀时出错: {e}")
+
+            return config
+
+        # 替换配置生成函数
+        self.file_writer._get_writer_default_config = new_get_writer_default_config
 
     def get_source_language_for_file(self, storage_path: str) -> str:
         """
