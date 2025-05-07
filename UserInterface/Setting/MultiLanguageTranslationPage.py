@@ -1,8 +1,9 @@
-from PyQt5.QtWidgets import QFrame, QVBoxLayout, QGroupBox
-from qfluentwidgets import CheckBox, StrongBodyLabel, InfoBar, InfoBarPosition
+from PyQt5.QtWidgets import QFrame, QVBoxLayout, QGroupBox, QHBoxLayout
+from qfluentwidgets import CheckBox, StrongBodyLabel, InfoBar, InfoBarPosition, Action, FluentIcon
 
 from Base.Base import Base
 from Widget.SwitchButtonCard import SwitchButtonCard
+from Widget.CommandBarCard import CommandBarCard
 from UserInterface import AppFluentWindow
 
 
@@ -64,6 +65,13 @@ class MultiLanguageTranslationPage(QFrame, Base):
         language_group = QGroupBox(self.tra("选择目标语言"))
         language_layout = QVBoxLayout()
 
+        # 添加操作按钮
+        self.command_bar_card = CommandBarCard()
+        self.add_command_bar_action_select_all(self.command_bar_card)
+        self.command_bar_card.add_separator()
+        self.add_command_bar_action_deselect_all(self.command_bar_card)
+        language_layout.addWidget(self.command_bar_card)
+
         # 定义语言与值的配对列表（显示文本, 存储值）
         self.language_pairs = [
             (self.tra("简中"), "chinese_simplified"),
@@ -90,6 +98,56 @@ class MultiLanguageTranslationPage(QFrame, Base):
 
         language_group.setLayout(language_layout)
         parent.addWidget(language_group)
+
+    # 全选按钮
+    def add_command_bar_action_select_all(self, parent: CommandBarCard) -> None:
+        def triggered() -> None:
+            config = self.load_config()
+            # 只有在多语言翻译开关打开时才执行全选操作
+            if config.get("multi_language_translation_switch", False):
+                # 设置所有复选框为选中状态
+                for checkbox in self.checkboxes.values():
+                    checkbox.setChecked(True)
+                # 更新选中的语言列表
+                self.update_selected_languages()
+            else:
+                # 如果多语言翻译开关关闭，显示提示
+                InfoBar.warning(
+                    title="",
+                    content=self.tra("请先启用多语言批量翻译功能"),
+                    parent=self,
+                    duration=3000,
+                    position=InfoBarPosition.TOP
+                )
+
+        parent.add_action(
+            Action(FluentIcon.ADD_TO, self.tra("全选"), parent, triggered=triggered)
+        )
+
+    # 全不选按钮
+    def add_command_bar_action_deselect_all(self, parent: CommandBarCard) -> None:
+        def triggered() -> None:
+            config = self.load_config()
+            # 只有在多语言翻译开关打开时才执行全不选操作
+            if config.get("multi_language_translation_switch", False):
+                # 设置所有复选框为未选中状态
+                for checkbox in self.checkboxes.values():
+                    checkbox.setChecked(False)
+                # 更新选中的语言列表
+                self.update_selected_languages()
+            else:
+                # 如果多语言翻译开关关闭，显示提示
+                InfoBar.warning(
+                    title="",
+                    content=self.tra("请先启用多语言批量翻译功能"),
+                    parent=self,
+                    duration=3000,
+                    position=InfoBarPosition.TOP
+                )
+
+        parent.add_action(
+            Action(FluentIcon.REMOVE_FROM, self.tra("全不选"), parent, triggered=triggered)
+        )
 
     # 添加说明文本
     def add_widget_description(self, parent: QVBoxLayout) -> None:
