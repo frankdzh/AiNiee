@@ -2,28 +2,33 @@ import re
 from types import SimpleNamespace
 
 from Base.Base import Base
-from ModuleFolders.Translator import TranslatorUtil, Translator
-from ModuleFolders.Translator.TranslatorConfig import TranslatorConfig
+from ModuleFolders.TaskExecutor import TranslatorUtil
+from ModuleFolders.TaskConfig.TaskConfig import TaskConfig
 from ModuleFolders.PromptBuilder.PromptBuilderEnum import PromptBuilderEnum
-
 class PromptBuilder(Base):
     def __init__(self) -> None:
         super().__init__()
 
-    # 获取默认系统提示词，优先从内存中读取，如果没有，则从文件中读取
-    def get_system_default(config: TranslatorConfig) -> str:
+    # 获取默认系统提示词(未处理的)，优先从内存中读取，如果没有，则从文件中读取
+    def get_system_default(config: TaskConfig, prompt_preset) -> str:
         if getattr(PromptBuilder, "common_system_zh", None) == None:
-            with open("./Resource/Prompt/common_system_zh.txt", "r", encoding = "utf-8") as reader:
+            with open("./Resource/Prompt/Translate/common_system_zh.txt", "r", encoding = "utf-8") as reader:
                 PromptBuilder.common_system_zh = reader.read().strip()
         if getattr(PromptBuilder, "common_system_en", None) == None:
-            with open("./Resource/Prompt/common_system_en.txt", "r", encoding = "utf-8") as reader:
+            with open("./Resource/Prompt/Translate/common_system_en.txt", "r", encoding = "utf-8") as reader:
                 PromptBuilder.common_system_en = reader.read().strip()
         if getattr(PromptBuilder, "cot_system_zh", None) == None:
-            with open("./Resource/Prompt/cot_system_zh.txt", "r", encoding = "utf-8") as reader:
+            with open("./Resource/Prompt/Translate/cot_system_zh.txt", "r", encoding = "utf-8") as reader:
                 PromptBuilder.cot_system_zh = reader.read().strip()
         if getattr(PromptBuilder, "cot_system_en", None) == None:
-            with open("./Resource/Prompt/cot_system_en.txt", "r", encoding = "utf-8") as reader:
+            with open("./Resource/Prompt/Translate/cot_system_en.txt", "r", encoding = "utf-8") as reader:
                 PromptBuilder.cot_system_en = reader.read().strip()
+        if getattr(PromptBuilder, "think_system_zh", None) == None:
+            with open("./Resource/Prompt/Translate/think_system_zh.txt", "r", encoding = "utf-8") as reader:
+                PromptBuilder.think_system_zh = reader.read().strip()
+        if getattr(PromptBuilder, "think_system_en", None) == None:
+            with open("./Resource/Prompt/Translate/think_system_en.txt", "r", encoding = "utf-8") as reader:
+                PromptBuilder.think_system_en = reader.read().strip()
 
 
         # 如果输入的是字典，则转换为命名空间
@@ -34,23 +39,27 @@ class PromptBuilder(Base):
             config = namespace
 
         # 构造结果
-        if config == None:
+        if prompt_preset == PromptBuilderEnum.COMMON and config.target_language in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.common_system_zh
-        elif config.prompt_preset == PromptBuilderEnum.COMMON and config.target_language in ("chinese_simplified", "chinese_traditional"):
-            result = PromptBuilder.common_system_zh
-        elif config.prompt_preset == PromptBuilderEnum.COMMON and config.target_language not in ("chinese_simplified", "chinese_traditional"):
+        elif prompt_preset == PromptBuilderEnum.COMMON and config.target_language not in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.common_system_en
-        elif config.prompt_preset == PromptBuilderEnum.COT and config.target_language in ("chinese_simplified", "chinese_traditional"):
+        elif prompt_preset == PromptBuilderEnum.COT and config.target_language in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.cot_system_zh
-        elif config.prompt_preset == PromptBuilderEnum.COT and config.target_language not in ("chinese_simplified", "chinese_traditional"):
+        elif prompt_preset == PromptBuilderEnum.COT and config.target_language not in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.cot_system_en
+        elif prompt_preset == PromptBuilderEnum.THINK and config.target_language in ("chinese_simplified", "chinese_traditional"):
+            result = PromptBuilder.think_system_zh
+        elif prompt_preset == PromptBuilderEnum.THINK and config.target_language not in ("chinese_simplified", "chinese_traditional"):
+            result = PromptBuilder.think_system_en
+        else:
+            result = PromptBuilder.common_system_zh
 
         return result
 
-    # 获取系统提示词
-    def build_system(config: TranslatorConfig, source_lang: str) -> str:
+    # 获取系统提示词(处理好的)
+    def build_system(config: TaskConfig, source_lang: str) -> str:
         # 获取默认系统提示词
-        PromptBuilder.get_system_default(config)
+        PromptBuilder.get_system_default(config, "")
 
         # 语言信息转换
         en_sl, source_language, en_tl, target_language = TranslatorUtil.get_language_display_names(source_lang, config.target_language)
@@ -58,39 +67,44 @@ class PromptBuilder(Base):
         # 构造结果
         if config == None:
             result = PromptBuilder.common_system_zh
-        elif config.prompt_preset == PromptBuilderEnum.COMMON and config.target_language in ("chinese_simplified", "chinese_traditional"):
+        elif config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.COMMON and config.target_language in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.common_system_zh
-        elif config.prompt_preset == PromptBuilderEnum.COMMON and config.target_language not in ("chinese_simplified", "chinese_traditional"):
+        elif config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.COMMON and config.target_language not in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.common_system_en
             source_language = en_sl
             target_language = en_tl
-        elif config.prompt_preset == PromptBuilderEnum.COT and config.target_language in ("chinese_simplified", "chinese_traditional"):
+        elif config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.COT and config.target_language in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.cot_system_zh
-        elif config.prompt_preset == PromptBuilderEnum.COT and config.target_language not in ("chinese_simplified", "chinese_traditional"):
+        elif config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.COT and config.target_language not in ("chinese_simplified", "chinese_traditional"):
             result = PromptBuilder.cot_system_en
             source_language = en_sl
             target_language = en_tl
+        elif config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.THINK and config.target_language in ("chinese_simplified", "chinese_traditional"):
+            result = PromptBuilder.think_system_zh
+        elif config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.THINK and config.target_language not in ("chinese_simplified", "chinese_traditional"):
+            result = PromptBuilder.think_system_en
+            source_language = en_sl
+            target_language = en_tl
+
 
         return result.replace("{source_language}", source_language).replace("{target_language}", target_language).strip()
 
     # 构建翻译示例
-    def build_translation_sample(config: TranslatorConfig, input_dict: dict, source_lang: "Translator.SourceLang") -> tuple[str, str]:
+    def build_translation_sample(config: TaskConfig, input_dict: dict, source_lang) -> tuple[str, str]:
         list1 = []
         list3 = []
         list2 = []
         list4 = []
 
-        conv_source_lang = TranslatorUtil.map_language_code_to_name(source_lang.new)
+        conv_source_lang = TranslatorUtil.map_language_code_to_name(source_lang)
         if conv_source_lang == 'un':
-            conv_source_lang = TranslatorUtil.map_language_code_to_name(source_lang.most_common)
+            return "", ""
+            #conv_source_lang = TranslatorUtil.map_language_code_to_name(source_lang.most_common)
 
         # 检测原文语言是否能够构建动态示例
         if conv_source_lang not in ["japanese", "korean", "russian", "chinese_simplified", "chinese_traditional", "french",
                                 "german", "spanish", "english"]:
             return "", ""
-
-        # 获取特定示例
-        #list1, list3 = PromptBuilder.get_default_translation_example(config, input_dict, source_lang)
 
         # 获取自适应示例（无法构建english的）
         if conv_source_lang in ["japanese", "korean", "russian", "chinese_simplified", "chinese_traditional", "french",
@@ -188,82 +202,6 @@ class PromptBuilder(Base):
 
         return source_str, target_str
 
-    # 辅助函数，构建特定翻译示例
-    def get_default_translation_example(config: TranslatorConfig, input_dict: dict, source_lang: str) -> tuple[list[str], list[str]]:
-        # 内置的正则表达式字典
-        source_list = []
-        translated_list = []
-
-        # 内置的正则表达式字典（缺少新增语言）
-        patterns_all = {
-            r"[a-zA-Z]=": {
-                "japanese": 'a="　　ぞ…ゾンビ系…。',
-                "english": "a=\"　　It's so scary….",
-                "korean": 'a="　　정말 무서워요….',
-                "russian": 'а="　　Ужасно страшно...。',
-                "chinese_simplified": 'a="　　好可怕啊……。',
-                "chinese_traditional": 'a="　　好可怕啊……。'},
-            r"【|】": {
-                "japanese": "【ベーカリー】営業時間 8：00～18：00",
-                "english": "【Bakery】Business hours 8:00-18:00",
-                "korean": "【빵집】영업 시간 8:00~18:00",
-                "russian": "【пекарня】Время работы 8:00-18:00",
-                "chinese_simplified": "【面包店】营业时间 8：00～18：00",
-                "chinese_traditional": "【麵包店】營業時間 8：00～18：00"},
-            r"\r|\n": {
-                "japanese": "敏捷性が上昇する。　　　　　　　\r\n効果：パッシブ",
-                "english": "Agility increases.　　　　　　　\r\nEffect: Passive",
-                "korean": "민첩성이 상승한다.　　　　　　　\r\n효과：패시브",
-                "russian": "Повышает ловкость.　　　　　　　\r\nЭффект: Пассивный",
-                "chinese_simplified": "提高敏捷性。　　　　　　　\r\n效果：被动",
-                "chinese_traditional": "提高敏捷性。　　　　　　　\r\n效果：被動",
-            },
-            r"\\[A-Za-z]\[\d+\]": {
-                "japanese": "\\F[21]ちょろ……ちょろろ……じょぼぼぼ……♡",
-                "english": "\\F[21]Gurgle…Gurgle…Dadadada…♡",
-                "korean": "\\F[21]둥글둥글…둥글둥글…둥글둥글…♡",
-                "russian": "\\F[21]Гуру... гуругу...Дадада... ♡",
-                "chinese_simplified": "\\F[21]咕噜……咕噜噜……哒哒哒……♡",
-                "chinese_traditional": "\\F[21]咕嚕……咕嚕嚕……哒哒哒……♡"},
-            r"「|」":{
-                    "japanese": "キャラクターA：「すごく面白かった！」",
-                    "english": "Character A：「It was really fun!」",
-                    "korean": "캐릭터 A：「정말로 재미있었어요!」",
-                    "russian": "Персонаж A: 「Было очень интересно!」",
-                    "chinese_simplified": "角色A：「超级有趣！」",
-                    "chinese_traditional": "角色A：「超有趣！」"
-                    },
-            r"∞|@": {
-                "japanese": "若くて∞＠綺麗で∞＠エロくて",
-                "english": "Young ∞＠beautiful ∞＠sexy.",
-                "korean": "젊고∞＠아름답고∞＠섹시하고",
-                "russian": "Молодые∞＠Красивые∞＠Эротичные",
-                "chinese_simplified": "年轻∞＠漂亮∞＠色情",
-                "chinese_traditional": "年輕∞＠漂亮∞＠色情"},
-            r"↓": {
-                "japanese": "若くて↓綺麗で↓↓エロくて",
-                "english": "Young ↓beautiful ↓↓sexy.",
-                "korean": "젊고↓아름답고↓↓섹시하고",
-                "russian": "Молодые↓Красивые↓↓Эротичные",
-                "chinese_simplified": "年轻↓漂亮↓↓色情",
-                "chinese_traditional": "年輕↓漂亮↓↓色情"},
-        }
-
-        conv_source_lang = TranslatorUtil.map_language_code_to_name(source_lang)
-
-        for _, value in input_dict.items():
-            for pattern, translation_sample in patterns_all.items():
-                # 检查值是否符合正则表达
-                if re.search(pattern, value):
-                    translation_sample = translation_sample.get(conv_source_lang)
-                    # 如果未在结果列表中，则添加
-                    if translation_sample and translation_sample not in source_list:
-                        source_list.append(translation_sample)
-                        translated_list.append(translation_sample[config.target_language])
-
-
-        return source_list, translated_list
-
     # 辅助函数，清除列表过多相似的元素
     def clean_list(lst) -> list[str]:
         # 函数用于删除集合中的数字
@@ -338,7 +276,7 @@ class PromptBuilder(Base):
         return result  # 返回修改后的列表
 
     # 构建相似格式翻译示例
-    def build_adaptive_translation_sample(config: TranslatorConfig, input_dict: dict, conv_source_lang: str) -> tuple[list[str], list[str]]:
+    def build_adaptive_translation_sample(config: TaskConfig, input_dict: dict, conv_source_lang: str) -> tuple[list[str], list[str]]:
         # 输入字典示例
         # ex_dict = {
         #     "0": "こんにちは，こんにちは。こんにちは#include <iostream>",
@@ -436,8 +374,34 @@ class PromptBuilder(Base):
             PromptBuilder.replace_and_increment(trans_cleaned, translated_text)
         )
 
+    # 构建原文
+    def build_source_text(config: TaskConfig, source_text_dict: dict) -> str:
+        numbered_lines = []
+        for index, line in enumerate(source_text_dict.values()):
+            # 检查是否为多行文本
+            if "\n" in line:
+                lines = line.split("\n")  # 需要与回复提取的行分割方法一致
+                numbered_text = f"{index + 1}.[\n"
+                total_lines = len(lines)
+                for sub_index, sub_line in enumerate(lines):
+                    # 不去除空白内容，保留\r其他平台的换行符，虽然AI回复不一定保留...
+                    # 仅当 **只有一个** 尾随空格时才去除
+                    sub_line = sub_line[:-1] if re.match(r'.*[^ ] $', sub_line) else sub_line
+                    numbered_text += f'"{index + 1}.{total_lines - sub_index}.,{sub_line}",\n'
+                numbered_text = numbered_text.rstrip('\n')
+                numbered_text = numbered_text.rstrip(',')
+                numbered_text += f"\n]"  # 用json.dumps会影响到原文的转义字符
+                numbered_lines.append(numbered_text)
+            else:
+                # 单行文本直接添加序号
+                numbered_lines.append(f"{index + 1}.{line}")
+
+        source_text_str = "\n".join(numbered_lines)
+        
+        return source_text_str
+
     # 构造术语表
-    def build_glossary_prompt(config: TranslatorConfig, input_dict: dict) -> str:
+    def build_glossary_prompt(config: TaskConfig, input_dict: dict) -> str:
         # 将输入字典中的所有值转换为集合
         lines = set(line for line in input_dict.values())
 
@@ -487,24 +451,8 @@ class PromptBuilder(Base):
 
         return glossary_prompt
 
-    # 构造提取术语表要求
-    def build_glossary_extraction_criteria(config: TranslatorConfig) -> str:
-
-        if config.target_language in ("chinese_simplified", "chinese_traditional"):
-            profile = "\n\n###如果文本中出现具体角色名，则以character并列标签返回，没有则不返回\n"
-            profile += "<character>\n"
-            profile += "原名|译名|备注\n"
-            profile += "</character>\n"
-        else:
-            profile = "\n\n### If specific character names appear in the text, return them with the character label, otherwise do not return\n"
-            profile += "<character>\n"
-            profile += "Original Name|Translated Name|Remarks\n"
-            profile += "</character>\n"
-
-        return profile
-
     # 构造禁翻表
-    def build_ntl_prompt(config: TranslatorConfig, source_text_dict) -> str:
+    def build_ntl_prompt(config: TaskConfig, source_text_dict) -> str:
 
         # 获取禁翻表内容
         exclusion_list_data = config.exclusion_list_data.copy()
@@ -555,24 +503,8 @@ class PromptBuilder(Base):
         
         return result
 
-    # 构造提取禁翻表要求
-    def build_ntl_extraction_criteria(config: TranslatorConfig) -> str:
-
-        if config.target_language in ("chinese_simplified", "chinese_traditional"):
-            profile = "\n\n###如果文本中出现标记符, 如 {name}, //F[N1],则以code并列标签返回，没有则不返回\n"
-            profile += "<code>\n"
-            profile += "标记符|备注\n"
-            profile += "</code>\n"
-        else:
-            profile = "\n\n### If markers appear in the text, such as {name}, //F[N1], return them with the code label, otherwise do not return\n"
-            profile += "<code>\n"
-            profile += "Marker|Remarks\n"
-            profile += "</code>\n"
-
-        return profile
-
     # 构造角色设定
-    def build_characterization(config: TranslatorConfig, input_dict: dict) -> str:
+    def build_characterization(config: TaskConfig, input_dict: dict) -> str:
         # 将数据存储到中间字典中
         dictionary = {}
         for v in config.characterization_data:
@@ -656,7 +588,7 @@ class PromptBuilder(Base):
         return profile
 
     # 构造背景设定
-    def build_world_building(config: TranslatorConfig) -> str:
+    def build_world_building(config: TaskConfig) -> str:
         # 获取自定义内容
         world_building = config.world_building_content
 
@@ -673,7 +605,7 @@ class PromptBuilder(Base):
         return profile
 
     # 构造文风要求
-    def build_writing_style(config: TranslatorConfig) -> str:
+    def build_writing_style(config: TaskConfig) -> str:
         # 获取自定义内容
         writing_style = config.writing_style_content
 
@@ -690,7 +622,7 @@ class PromptBuilder(Base):
         return profile
 
     # 构建翻译示例
-    def build_translation_example(config: TranslatorConfig) -> str:
+    def build_translation_example(config: TaskConfig) -> str:
         data = config.translation_example_data
 
         # 数据校验
@@ -723,7 +655,7 @@ class PromptBuilder(Base):
         return translation_example
 
     # 携带原文上文
-    def build_pre_text(config: TranslatorConfig, input_list: list[str]) -> str:
+    def build_pre_text(config: TaskConfig, input_list: list[str]) -> str:
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
             profile = "###上文内容\n"
             profile += "<previous>\n"
@@ -742,91 +674,40 @@ class PromptBuilder(Base):
 
         return profile
 
-    # 构建用户请求翻译的示例前文
-    def build_userExamplePrefix(config: TranslatorConfig) -> str:
+    # 构建用户示例前文
+    def build_userExamplePrefix(config: TaskConfig) -> str:
         # 根据中文开关构建
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
             profile = "###这是你接下来的翻译任务，原文文本如下\n"
-            profile_cot = "###这是你接下来的翻译任务，原文文本如下\n  "
-
         else:
             profile = "###This is your next translation task, the original text is as follows\n"
-            profile_cot = "###This is your next translation task, the original text is as follows\n"
 
-        # 根据cot开关进行选择
-        if config.prompt_preset == PromptBuilderEnum.COT:
-            the_profile = profile_cot
-        else:
-            the_profile = profile
+        return profile
 
-        return the_profile
-
-    # 构建模型回复示例前文
-    def build_modelExamplePrefix(config: TranslatorConfig) -> str:
-
+    # 构建模型示例前文
+    def build_modelExamplePrefix(config: TaskConfig) -> str:
         # 根据中文开关构建
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
-
             # 非cot的构建
             profile = "我完全理解了翻译的要求与原则，我将遵循您的指示进行翻译，以下是对原文的翻译:\n"
-
-
-            # cot的构建
-            profile_cot = "我完全理解了翻译的步骤与原则，我将遵循您的指示进行翻译，并深入思考和解释:\n"
-
-            profile_cot += "###第一步：初步直译\n"
-            profile_cot += """{直译内容}\n"""
-
-            profile_cot += "###第二步：深入校正\n"
-            profile_cot += """{校正内容}\n"""
-
-            profile_cot += "###第三步：最终意译与润色\n"
-
 
         else:
             # Non-CoT prompt construction
             profile = "I have fully understood the translation requirements and principles. I will follow your instructions to perform the translation. Below is my translation of the original text:\n"
 
-            # Construction of COT
-            profile_cot = "I have fully understood the steps and principles of translation. I will follow your instructions to perform the translation and provide in-depth thinking and explanations:\n"
+        return profile
 
-            profile_cot += "### Step 1: Initial Literal Translation\n"
-            profile_cot += """{literal_content}\n"""
-
-            profile_cot += "### Step 2: In-depth Polishing\n"
-            profile_cot += """{polished_content}\n"""
-
-            profile_cot += "### Step 3: Final Liberal Translation and Polishing\n"
-
-
-        # 根据cot开关进行选择
-        if config.prompt_preset == PromptBuilderEnum.COT:
-            the_profile = profile_cot
-        else:
-            the_profile = profile
-
-        return the_profile
-
-    # 构建用户请求翻译的原文前文:
-    def build_userQueryPrefix(config: TranslatorConfig) -> str:
+    # 构建翻译前文:
+    def build_userQueryPrefix(config: TaskConfig) -> str:
         # 根据中文开关构建
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
             profile = " ###这是你接下来的翻译任务，原文文本如下\n"
-            profile_cot = "###这是你接下来的翻译任务，原文文本如下\n"
         else:
             profile = " ###This is your next translation task, the original text is as follows\n"
-            profile_cot = "###This is your next translation task, the original text is as follows\n"
+        return profile
 
-        # 根据cot开关进行选择
-        if config.prompt_preset == PromptBuilderEnum.COT:
-            the_profile = profile_cot
-        else:
-            the_profile = profile
-
-        return the_profile
-
-    # 构建模型预输入回复的前文
-    def build_modelResponsePrefix(config: TranslatorConfig) -> str:
+    # 构建预输入回复的前文
+    def build_modelResponsePrefix(config: TaskConfig) -> str:
         # 根据中文开关构建
         if config.target_language in ("chinese_simplified", "chinese_traditional"):
             profile = "我完全理解了翻译的要求与原则，我将遵循您的指示进行翻译，以下是对原文的翻译:"
@@ -836,29 +717,121 @@ class PromptBuilder(Base):
             profile_cot = "I have fully understood the steps and principles of translation. I will follow your instructions to perform the translation and provide in-depth thinking and explanations:"
 
         # 根据cot开关进行选择
-        if config.prompt_preset == PromptBuilderEnum.COT:
+        if config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.COT:
             the_profile = profile_cot
         else:
             the_profile = profile
 
         return the_profile
 
-    # 构建用户请求翻译的示例前文
-    def build_userExamplePrefix(config: TranslatorConfig) -> str:
-        # 根据中文开关构建
-        if config.target_language in ("chinese_simplified", "chinese_traditional"):
-            profile = "###这是你接下来的翻译任务，原文文本如下\n"
-            profile_cot = "###这是你接下来的翻译任务，原文文本如下\n  "
 
+    # 生成信息结构 - 通用
+    def generate_prompt(config, source_text_dict: dict, previous_text_list: list[str], source_lang) -> tuple[list[dict], str, list[str]]:
+        # 储存指令
+        messages = []
+        # 储存额外日志
+        extra_log = []
+
+        # 基础系统提示词
+        if config.translation_prompt_selection["last_selected_id"] in (PromptBuilderEnum.COMMON, PromptBuilderEnum.COT, PromptBuilderEnum.THINK):
+            system = PromptBuilder.build_system(config, source_lang)
         else:
-            profile = "###This is your next translation task, the original text is as follows\n"
-            profile_cot = "###This is your next translation task, the original text is as follows\n"
+            system = config.translation_prompt_selection["prompt_content"]  # 自定义提示词
 
-        # 根据cot开关进行选择
-        if config.prompt_preset == PromptBuilderEnum.COT:
-            the_profile = profile_cot
-        else:
-            the_profile = profile
 
-        return the_profile
-    
+        # 如果开启术语表
+        if config.prompt_dictionary_switch == True:
+            glossary = PromptBuilder.build_glossary_prompt(config, source_text_dict)
+            if glossary != "":
+                system += glossary
+                extra_log.append(glossary)
+
+        # 如果开启禁翻表
+        if config.exclusion_list_switch == True:
+            ntl = PromptBuilder.build_ntl_prompt(config, source_text_dict)
+            if ntl != "":
+                system += ntl
+                extra_log.append(ntl)
+
+
+        # 如果角色介绍开关打开
+        if config.characterization_switch == True:
+            characterization = PromptBuilder.build_characterization(config, source_text_dict)
+            if characterization != "":
+                system += characterization
+                extra_log.append(characterization)
+
+        # 如果启用自定义世界观设定功能
+        if config.world_building_switch == True:
+            world_building = PromptBuilder.build_world_building(config)
+            if world_building != "":
+                system += world_building
+                extra_log.append(world_building)
+
+        # 如果启用自定义行文措辞要求功能
+        if config.writing_style_switch == True:
+            writing_style = PromptBuilder.build_writing_style(config)
+            if writing_style != "":
+                system += writing_style
+                extra_log.append(writing_style)
+
+        # 如果启用翻译风格示例功能
+        if config.translation_example_switch == True:
+            translation_example = PromptBuilder.build_translation_example(config)
+            if translation_example != "":
+                system += translation_example
+                extra_log.append(translation_example)
+
+        # 构建动态few-shot
+        switch_A = config.few_shot_and_example_switch # 打开动态示例开关时
+        switch_B = config.translation_prompt_selection["last_selected_id"] == PromptBuilderEnum.COMMON #仅在通用提示词
+        if switch_A and switch_B:
+
+            # 获取默认示例前置文本
+            pre_prompt_example = PromptBuilder.build_userExamplePrefix(config)
+            fol_prompt_example = PromptBuilder.build_modelExamplePrefix(config)
+
+            # 获取具体动态示例内容
+            original_exmaple, translation_example_content = PromptBuilder.build_translation_sample(config, source_text_dict, source_lang)
+            if original_exmaple and translation_example_content:
+                messages.append({
+                    "role": "user",
+                    "content": f"{pre_prompt_example}<textarea>\n{original_exmaple}\n</textarea>"
+                })
+                messages.append({
+                    "role": "assistant",
+                    "content": f"{fol_prompt_example}<textarea>\n{translation_example_content}\n</textarea>"
+                })
+                extra_log.append(f"原文示例已添加：\n{original_exmaple}")
+                extra_log.append(f"译文示例已添加：\n{translation_example_content}")
+
+        # 如果加上文，获取上文内容
+        previous = ""
+        if config.pre_line_counts and previous_text_list:
+            previous = PromptBuilder.build_pre_text(config, previous_text_list)
+            if previous != "":
+                extra_log.append(f"###上文内容\n{"\n".join(previous_text_list)}")
+
+
+        # 构建待翻译文本
+        source_text = PromptBuilder.build_source_text(config,source_text_dict)
+        pre_prompt = PromptBuilder.build_userQueryPrefix(config) # 用户提问前置文本
+        source_text_str = f"{previous}\n{pre_prompt}<textarea>\n{source_text}\n</textarea>"
+
+        # 构建用户信息
+        messages.append(
+            {
+                "role": "user",
+                "content": source_text_str,
+            }
+        )
+
+        # 构建预输入回复信息
+        switch_C = config.translation_prompt_selection["last_selected_id"] in (PromptBuilderEnum.COT, PromptBuilderEnum.COMMON) 
+        if switch_A and switch_C:
+            fol_prompt = PromptBuilder.build_modelResponsePrefix(config)
+            messages.append({"role": "assistant", "content": fol_prompt})
+
+
+        return messages, system, extra_log
+

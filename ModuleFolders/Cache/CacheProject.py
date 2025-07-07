@@ -25,6 +25,8 @@ class ProjectType:
     VNT = "Vnt"
     VTT = "Vtt"
     I18NEXT = "I18next"
+    PO = "Po"
+    BABELDOC_PDF = "BabeldocPdf"
 
 
 @dataclass(repr=False)
@@ -43,6 +45,7 @@ class CacheProjectStatistics(ThreadSafeCache):
 class CacheProject(ThreadSafeCache, ExtraMixin):
     project_id: str = ''
     project_type: str = ''
+    project_name: str = ''
     stats_data: CacheProjectStatistics = None
     files: dict[str, CacheFile] = field(default_factory=dict)
     detected_encoding: str = "utf-8"
@@ -85,3 +88,6 @@ class CacheProject(ThreadSafeCache, ExtraMixin):
     def file_project_types(self) -> frozenset[str]:
         with self._lock:
             return frozenset(file.file_project_type for file in self.files.values())
+
+    def _extra(self) -> dict[str, Any]:
+        return self.extra

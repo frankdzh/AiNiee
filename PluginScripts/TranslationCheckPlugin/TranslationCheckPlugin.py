@@ -3,7 +3,7 @@ import os
 import re
 import time
 
-from ModuleFolders.Cache.CacheItem import CacheItem
+from ModuleFolders.Cache.CacheItem import TranslationStatus
 from ModuleFolders.Cache.CacheProject import CacheProject
 from ..PluginBase import PluginBase
 
@@ -11,7 +11,7 @@ class TranslationCheckPlugin(PluginBase):
     def __init__(self):
         super().__init__()
         self.name = "TranslationCheckPlugin"
-        self.description = "翻译功能检查插件，用于翻译结果与功能运行评估，包括术语表、禁翻表、换行符和自动处理等。\n错误信息文件将输出到 output 文件夹。"
+        self.description = "翻译流程检查插件，用于翻译结果与功能运行评估，包括术语表、禁翻表、换行符和自动处理等。\n错误信息文件将输出到 output 文件夹。"
         self.visibility = True
         self.default_enable = False
         self.add_event("translation_completed", PluginBase.PRIORITY.LOWEST)
@@ -156,7 +156,7 @@ class TranslationCheckPlugin(PluginBase):
                 source_text = source_text if source_text is not None else ""
                 translated_text = translated_text if translated_text is not None else ""
 
-                if translation_status == CacheItem.STATUS.EXCLUDED:  # 已被过滤
+                if translation_status == TranslationStatus.EXCLUDED:  # 已被过滤
                     continue # 跳过被过滤的条目
 
                 current_entry_errors = [] # 存储当前条目的错误信息
@@ -451,7 +451,11 @@ class TranslationCheckPlugin(PluginBase):
 
         # 在处理过的文本上计算文本内的换行符数量
         source_newlines = trimmed_source_text.count('\n')
+        # 检查原文中的转义换行符
+        source_newlines += trimmed_source_text.count('\\n')
+
         translated_newlines = trimmed_translated_text.count('\n')
+        translated_newlines += trimmed_translated_text.count('\\n')
 
         if source_newlines != translated_newlines:
             error_msg = f"📃[换行符错误] 原文有 {source_newlines} 个换行符，译文有 {translated_newlines} 个"

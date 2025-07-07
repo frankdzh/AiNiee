@@ -1,178 +1,469 @@
+import json
+import os
 import re
-from typing import List, Dict, Tuple
+from typing import List, Dict, Tuple, Any, Optional
 
-from Base.Base import Base
+class TextProcessor():
+    # 定义日语字符集的正则表达式
+    JAPANESE_CHAR_SET_CONTENT = (
+        r'\u3040-\u309F'
+        r'\u30A0-\u30FF'
+        r'\u30FB-\u30FE'
+        r'\uFF65-\uFF9F'
+        r'\u4E00-\u9FFF'
+        r'\u3400-\u4DBF'
+        r'\u3001-\u303F'
+        r'\uff01-\uff5e'
+    )
 
+    # 正则库路径
+    DEFAULT_REGEX_DIR = os.path.join(".", "Resource", "Regex", "regex.json")
 
-class TextProcessor(Base):
-    def __init__(self):
-        pass
+    # 数字序号与空白内容正则
+    RE_DIGITAL_SEQ_PRE_STR = r'^(\d+)\.'
+    RE_DIGITAL_SEQ_REC_STR = r'^【(\d+)】'
+    RE_WHITESPACE_AFFIX_STR = r'^(\s*)(.*?)(\s*)$'
+
+    def __init__(self, config: Any):
+        super().__init__()
+
+        current_regex_dir = self.DEFAULT_REGEX_DIR
+
+        # 预编译固定处理的正则表达式
+        self.RE_DIGITAL_SEQ_PRE = re.compile(self.RE_DIGITAL_SEQ_PRE_STR)
+        self.RE_DIGITAL_SEQ_REC = re.compile(self.RE_DIGITAL_SEQ_REC_STR)
+
+        # 多行处理正则（使用MULTILINE标志）
+        self.RE_WHITESPACE_AFFIX = re.compile(self.RE_WHITESPACE_AFFIX_STR, re.MULTILINE)
+
+        # 日语字符处理正则
+        ja_affix_pattern_str = (
+            rf'(^[^{self.JAPANESE_CHAR_SET_CONTENT}]*)'  # Group 1: Prefix
+            rf'(.*?)'  # Group 2: Core text
+            rf'([^{self.JAPANESE_CHAR_SET_CONTENT}]*$)'  # Group 3: Suffix
+        )
+        self.RE_JA_AFFIX = re.compile(ja_affix_pattern_str, re.MULTILINE)
+
+        # 预编译文本前后替换正则
+        self.pre_translation_rules_compiled = self._compile_translation_rules(
+            config.pre_translation_data
+        )
+        self.post_translation_rules_compiled = self._compile_translation_rules(
+            config.post_translation_data
+        )
+
+        # 预编译自动处理正则
+        code_pattern_strings = self._prepare_code_pattern_strings(
+            config.exclusion_list_data, current_regex_dir
+        )
+
+        special_placeholder_pattern_strings = self._build_dynamic_pattern_strings(
+            code_pattern_strings, r"\s*{p}\s*"
+        )
+        self.auto_compiled_patterns = [
+            re.compile(p_str, re.IGNORECASE | re.MULTILINE)
+            for p_str in special_placeholder_pattern_strings if p_str
+        ]
+
+    def _normalize_line_endings(self, text: str) -> Tuple[str, List[Tuple[int, str]]]:
+        """
+        统一换行符为 \n，并记录每个换行符的原始类型和位置
+        现在支持HTML换行标记：<br>, <br/>, <br />
+        返回: (标准化后的文本, 换行符位置和类型列表)
+        """
+        if not ('\r' in text or '\n' in text or '<br' in text.lower()):
+            return text, []
+
+        # 记录每个换行符的位置和类型
+        line_endings = []
+        normalized_text = ""
+        i = 0
+        line_pos = 0  # 在标准化文本中的行位置
+
+        while i < len(text):
+            # 检查HTML <br> 标记（不区分大小写）
+            if text[i:i + 3].lower() == '<br':
+                # 找到完整的br标记
+                br_end = text.find('>', i)
+                if br_end != -1:
+                    br_tag = text[i:br_end + 1]
+                    line_endings.append((line_pos, br_tag))
+                    normalized_text += '\n'
+                    i = br_end + 1
+                    line_pos += 1
+                    continue
+
+            # 检查传统换行符
+            if i < len(text) - 1 and text[i:i + 2] == '\r\n':
+                # Windows 换行符
+                line_endings.append((line_pos, '\r\n'))
+                normalized_text += '\n'
+                i += 2
+                line_pos += 1
+            elif text[i] == '\r':
+                # Mac 经典换行符
+                line_endings.append((line_pos, '\r'))
+                normalized_text += '\n'
+                i += 1
+                line_pos += 1
+            elif text[i] == '\n':
+                # Unix 换行符
+                line_endings.append((line_pos, '\n'))
+                normalized_text += '\n'
+                i += 1
+                line_pos += 1
+            else:
+                normalized_text += text[i]
+                i += 1
+
+        return normalized_text, line_endings
+
+    def _restore_line_endings(self, text: str, line_endings: List[Tuple[int, str]]) -> str:
+        """根据记录的换行符信息还原原始格式"""
+        if not line_endings:
+            return text
+
+        lines = text.split('\n')
+        if len(lines) <= 1:
+            return text
+
+        # 重建文本，使用对应的原始换行符
+        result = []
+        for i, line in enumerate(lines[:-1]):  # 最后一行后面没有换行符
+            result.append(line)
+            if i < len(line_endings):
+                result.append(line_endings[i][1])
+            else:
+                result.append('\n')  # 默认使用 \n
+
+        # 添加最后一行
+        if lines:
+            result.append(lines[-1])
+
+        return ''.join(result)
+
+    def _handle_special_characters(self, prefix: str, core_text: str, suffix: str) -> Tuple[str, str, str]:
+        """处理特殊字符边界"""
+        # 处理前缀
+        if prefix:
+            if prefix.endswith('['):
+                core_text = '[' + core_text
+                prefix = prefix[:-1]
+            elif prefix.endswith('{'):
+                core_text = '{' + core_text
+                prefix = prefix[:-1]
+            elif prefix.endswith('（'):
+                core_text = '（' + core_text
+                prefix = prefix[:-1]
+            elif prefix.endswith('('):
+                core_text = '(' + core_text
+                prefix = prefix[:-1]
+
+        # 处理后缀
+        if suffix:
+            if suffix.startswith(']'):
+                core_text = core_text + ']'
+                suffix = suffix[1:]
+            elif suffix.startswith('}'):
+                core_text = core_text + '}'
+                suffix = suffix[1:]
+            elif suffix.startswith('）'):
+                core_text = core_text + '）'
+                suffix = suffix[1:]
+            elif suffix.startswith(')'):
+                core_text = core_text + ')'
+                suffix = suffix[1:]
+
+        # 数字后缀处理
+        if suffix and suffix.isdigit():
+            core_text, suffix = core_text + suffix, ""
+
+        return prefix, core_text, suffix
+
+    def _process_multiline_text(self, text: str, source_lang: str) -> Tuple[str, Dict]:
+        """处理多行文本"""
+        # 统一换行符
+        normalized_text, line_endings = self._normalize_line_endings(text)
+
+        # 按行分割
+        lines = normalized_text.split('\n')
+
+        # 选择正则模式
+        pattern = self.RE_WHITESPACE_AFFIX
+        if source_lang == 'ja' or source_lang == 'japanese':
+            pattern = self.RE_JA_AFFIX
+
+        non_empty_lines = []  # 只存储非空行，用于翻译
+        lines_info = []
+
+        for line in lines:
+            # 修改判断条件：检查空行或纯空白行
+            if not line or not line.strip():  # 空行或纯空白行处理
+                lines_info.append({
+                    'prefix': '',
+                    'suffix': '',
+                    'is_empty': True,
+                    'original_whitespace': line  # 保存原始空白字符
+                })
+                continue
+
+            match = pattern.match(line)
+            if match:
+                prefix, core_text, suffix = match.group(1), match.group(2), match.group(3)
+
+                # 应用特殊字符处理
+                prefix, core_text, suffix = self._handle_special_characters(prefix, core_text, suffix)
+
+                # 确保核心内容不为空
+                if not core_text.strip() and line.strip():
+                    core_text, prefix, suffix = line, '', ''
+
+                # 检查前缀 (去除首尾空格后判断是否为数字)
+                if prefix.strip().isdigit():
+                    # 只保留前导空白作为前缀
+                    prefix_leading = prefix[:len(prefix) - len(prefix.lstrip())]
+                    core_text = prefix[len(prefix_leading):] + core_text  # 数字+紧邻空白都合并
+                    prefix = prefix_leading
+
+                # 检查后缀
+                if suffix.strip().isdigit():
+                    # 只保留后尾空白作为后缀
+                    suffix_trailing = suffix[len(suffix.rstrip()):]
+                    core_text = core_text + suffix[:len(suffix) - len(suffix_trailing)]  # 数字+紧邻空白都合并
+                    suffix = suffix_trailing
+
+                non_empty_lines.append(core_text)
+                lines_info.append({'prefix': prefix, 'suffix': suffix, 'is_empty': False})
+            else:
+                non_empty_lines.append(line)
+                lines_info.append({'prefix': '', 'suffix': '', 'is_empty': False})
+
+        # 返回用于翻译的文本（不包含空行和纯空白行）
+        processed_text = '\n'.join(non_empty_lines)
+
+        return processed_text, {
+            'type': 'multiline',
+            'line_endings': line_endings,
+            'lines_info': lines_info
+        }
+
+    def _create_empty_info(self) -> Dict:
+        """创建空的处理信息"""
+        return {
+            'type': 'single',
+            'line_ending': '\n',
+            'lines_info': [{'prefix': '', 'suffix': '', 'is_empty': False}]
+        }
+
+    def _restore_multiline_text(self, text: str, info: Dict) -> str:
+        """还原多行文本"""
+        translated_lines = text.split('\n')
+        lines_info = info.get('lines_info', [])
+        line_endings = info.get('line_endings', [])
+
+        # 验证翻译结果行数是否正确
+        expected_translated_count = sum(1 for line_info in lines_info
+                                        if not line_info.get('is_empty', False))
+
+        if len(translated_lines) != expected_translated_count:
+            print(f"[Warning]: 翻译前后行数不匹配! 期望{expected_translated_count}行，实际{len(translated_lines)}行")
+
+        restored_lines = []
+        translated_index = 0
+
+        for line_info in lines_info:
+            if line_info.get('is_empty', False):
+                # 还原空行或纯空白行
+                original_whitespace = line_info.get('original_whitespace', '')
+                restored_lines.append(original_whitespace)
+            else:
+                # 还原非空行
+                if translated_index < len(translated_lines):
+                    line = translated_lines[translated_index]
+                    prefix = line_info.get('prefix', '')
+                    suffix = line_info.get('suffix', '')
+                    restored_lines.append(f"{prefix}{line}{suffix}")
+                    translated_index += 1
+                else:
+                    # 防护措施：如果翻译结果不够，使用空字符串
+                    restored_lines.append('')
+
+        # 还原原始换行符
+        restored_text = '\n'.join(restored_lines)
+        return self._restore_line_endings(restored_text, line_endings)
+
+    def _compile_translation_rules(self, rules_data: Optional[List[Dict]]) -> List[Dict]:
+        compiled_rules = []
+        if not rules_data:
+            return compiled_rules
+
+        # 遍历文本替换的数据
+        for rule in rules_data:
+            new_rule = rule.copy()
+
+            # 如果有正则，则进行预编译，如果没有则原样
+            if regex_str := rule.get("regex"):
+                new_rule["compiled_regex"] = re.compile(regex_str)
+
+            compiled_rules.append(new_rule)
+        return compiled_rules
+
+    def _prepare_code_pattern_strings(self, exclusion_list_data: Optional[List[Dict]], regex_dir_path: str) -> List[str]:
+        patterns: List[str] = []
+
+        # 读取正则库内容
+        with open(regex_dir_path, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            file_patterns = [item["regex"] for item in data
+                             if isinstance(item, dict) and "regex" in item and item["regex"]]
+        patterns.extend(file_patterns)
+
+        # 读取禁翻表内容
+        if exclusion_list_data:
+            for item in exclusion_list_data:
+                if regex_str := item.get("regex"):
+                    if regex_str: patterns.append(regex_str)
+                elif markers := item.get("markers"):
+                    if markers: patterns.append(re.escape(markers))
+        return patterns
+
+    def _build_dynamic_pattern_strings(self, base_patterns: List[str], format_string: str) -> List[str]:
+        """辅助函数，用于基于基础模式列表和格式化字符串构建增强的模式字符串(例如，在模式两侧添加空白匹配)"""
+        enhanced_patterns = []
+        if base_patterns:
+            for p in base_patterns:
+                if p:
+                    try:
+                        enhanced = format_string.format(p=p)
+                        enhanced_patterns.append(enhanced)
+                    except KeyError:
+                        enhanced_patterns.append(p)
+        return enhanced_patterns
 
     # 译前文本处理
-    def replace_all(self, config, text_dict: Dict[str, str], code_pattern_list: List[str]):
-        """执行全部替换操作"""
+    def replace_all(self, config, source_lang: str, text_dict: Dict[str, str]) -> \
+            Tuple[Dict[str, str], Dict, Dict, Dict, Dict]:
+        # 存储处理后信息的变量
         processed_text = {k: v for k, v in text_dict.items()}
-        prefix_codes, suffix_codes, placeholder_order = {}, {}, {}
+        prefix_codes: Dict[str, List[Dict]] = {}
+        suffix_codes: Dict[str, List[Dict]] = {}
+        placeholder_order: Dict[str, List[Dict[str, str]]] = {}
+        affix_whitespace_storage: Dict[str, Dict] = {}
+
+        # 获取各个配置信息,减少再次传递
+        pre_translation_switch = config.pre_translation_switch
+        auto_process_text_code_segment = config.auto_process_text_code_segment
+        target_platform = config.target_platform
 
         # 译前替换
-        if config.pre_translation_switch:
-            processed_text = TextProcessor.replace_before_translation(self,config, processed_text) 
+        if pre_translation_switch:
+            processed_text = self.replace_before_translation(processed_text)
 
-        # 预处理文本前后的空格与换行
-        processed_text, affix_whitespace_storage = TextProcessor.strip_and_record_affix_whitespace(self,processed_text) 
+        # 空白换行，非日语文本前后缀处理（支持多行）
+        processed_text, affix_whitespace_storage = self.strip_and_record_affixes(processed_text, source_lang)
 
-        # 自动处理代码段
-        if config.auto_process_text_code_segment:
-            # 处理前后缀 
-            processed_text, prefix_codes, suffix_codes = TextProcessor._process_affixes(self,processed_text, code_pattern_list)
-
-            # 特殊文本占位替换 
-            processed_text, placeholder_order = TextProcessor._replace_special_placeholders(self,
-                config.target_platform,
+        # 自动预处理
+        if auto_process_text_code_segment:
+            # 自动处理前后缀
+            processed_text, prefix_codes, suffix_codes = self._process_affixes(
                 processed_text,
-                code_pattern_list
+                self.auto_compiled_patterns,
+                self.auto_compiled_patterns
             )
 
-        # 数字序号预处理
-        processed_text = TextProcessor.digital_sequence_preprocessing(self,processed_text) 
+            # 自动处理文本中间内容
+            processed_text, placeholder_order = self._replace_special_placeholders(
+                target_platform,
+                processed_text,
+                self.auto_compiled_patterns
+            )
+
+        # 处理数字序号
+        processed_text = self.digital_sequence_preprocessing(processed_text)
 
         return processed_text, prefix_codes, suffix_codes, placeholder_order, affix_whitespace_storage
 
     # 译后文本处理
-    def restore_all(self, config, text_dict: Dict[str, str], prefix_codes: Dict, suffix_codes: Dict, placeholder_order: Dict, affix_whitespace_storage: Dict) -> Dict[str, str]:
-        """执行全部还原操作"""
+    def restore_all(self, config, text_dict: Dict[str, str], prefix_codes: Dict, suffix_codes: Dict,
+                    placeholder_order: Dict, affix_whitespace_storage: Dict) -> Dict[str, str]:
         restored = text_dict.copy()
 
-        # 自动处理代码段
-        if config.auto_process_text_code_segment:
-            # 占位符恢复
-            restored = TextProcessor._restore_special_placeholders(self,restored, placeholder_order)
-            # 前后缀恢复
-            restored = TextProcessor._restore_affixes(self,restored, prefix_codes, suffix_codes)
+        # 获取各个配置信息
+        auto_process_text_code_segment = config.auto_process_text_code_segment
+        post_translation_switch = config.post_translation_switch
+
+        # 自动处理还原
+        if auto_process_text_code_segment:
+            restored = self._restore_special_placeholders(restored, placeholder_order)
+            restored = self._restore_affixes(restored, prefix_codes, suffix_codes)
 
         # 译后替换
-        if config.post_translation_switch:
-            restored = TextProcessor.replace_after_translation(self,config, restored) 
+        if post_translation_switch:
+            restored = self.replace_after_translation(restored)
 
-        # 数字序号恢复
-        restored = TextProcessor.digital_sequence_recovery(self,restored) 
+        # 数字序号还原
+        restored = self.digital_sequence_recovery(restored)
 
-        # 前后缀的换行空格恢复
-        restored = TextProcessor.restore_affix_whitespace(self, affix_whitespace_storage, restored) 
+        # 前后空白换行，非日语文本还原（支持多行）
+        restored = self.restore_affix_whitespace(affix_whitespace_storage, restored)
 
         return restored
 
-    def _replace_special_placeholders(self, target_platform: str, text_dict: Dict[str, str], code_pattern_list: List[str]) -> Tuple[Dict[str, str], Dict[str, List[Dict[str, str]]]]:
-        """特殊文本占位替换"""
-
-        placeholder_patterns = TextProcessor._build_special_placeholder_pattern(self,code_pattern_list)
+    # 处理并占位文本中间内容
+    def _replace_special_placeholders(self, target_platform: str, text_dict: Dict[str, str],
+                                      compiled_placeholder_patterns: List[re.Pattern]) -> \
+            Tuple[Dict[str, str], Dict[str, List[Dict[str, str]]]]:
         new_dict = {}
         placeholder_order: Dict[str, List[Dict[str, str]]] = {}
-        global_match_count = 0  # 全局匹配计数器，跨所有文本共享
+        global_match_count = 0
 
         for key, original_text in text_dict.items():
             current_text = original_text
             entry_placeholders: List[Dict[str, str]] = []
-            sakura_match_count = 0  # Sakura计数器，每个文本条目独立
+            sakura_match_count = 0
 
-            # 存储本次替换操作的信息，以便能在 re.sub 的 repl 函数外部访问
-            # 使用列表作为可变容器
-            replacement_info_holder = []
+            for pattern_obj in compiled_placeholder_patterns:
+                single_pattern_replacements: List[Dict[str, str]] = []
 
-            def replacer(match):
-                nonlocal global_match_count, sakura_match_count # 允许修改外部函数的变量
+                def replacer_for_this_pattern(match_obj):
+                    nonlocal global_match_count, sakura_match_count, single_pattern_replacements
 
-                # 检查全局计数器限制
-                # 注意：即使超出限制，re.sub 仍会完成当前模式的所有查找，
-                # 但我们只对达到限制前的匹配进行替换和记录。
-                # 一个更严格的实现可能需要finditer并手动构建字符串，但会更复杂。
-                # 当前实现：达到限制后，不再生成新占位符，并可能返回原匹配文本。
-                if global_match_count >= 50:
-                    # 达到上限，不再替换，返回原始内容
-                    return match.group(0)
+                    if global_match_count >= 50:
+                        return match_obj.group(0)
 
-                global_match_count += 1
-                sakura_match_count += 1
+                    global_match_count += 1
+                    sakura_match_count += 1
+                    original_match_val = match_obj.group(0)
 
-                original_match = match.group(0)
-                if target_platform == "sakura":
-                    placeholder = "↓" * sakura_match_count
-                else:
-                    placeholder = f"[P{global_match_count}]" # 使用全局计数
+                    placeholder_val = f"[P{global_match_count}]"
+                    if target_platform == "sakura":
+                        placeholder_val = "↓" * sakura_match_count
 
-                # 暂存替换信息
-                replacement_info_holder.append({
-                    "placeholder": placeholder,
-                    "original": original_match,
-                    "pattern": pattern_str # pattern_str 需要在外部循环中可用
-                })
-
-                return placeholder # 返回替换用的占位符
-
-            # 遍历每个正则模式
-            for pattern_str in placeholder_patterns:
-                # 清空上次模式的暂存信息
-                replacement_info_holder.clear()
+                    single_pattern_replacements.append({
+                        "placeholder": placeholder_val,
+                        "original": original_match_val,
+                        "pattern": pattern_obj.pattern
+                    })
+                    return placeholder_val
 
                 try:
-                    # 编译正则表达式
-                    pattern = re.compile(pattern_str, re.IGNORECASE | re.MULTILINE)
-                    # 使用 re.sub 和回调函数替换所有匹配项
-                    current_text = pattern.sub(replacer, current_text)
-
-                    # 将本次模式成功替换的信息添加到总列表
-                    # 按原样添加即可，恢复时反转
-                    entry_placeholders.extend(replacement_info_holder)
-
-                except re.error as e:
-                    print(f"[Warning]: 占位正则匹配出现问题！！ pattern '{pattern_str}' on key '{key}': {e}")
-                    # 可以选择跳过这个模式或采取其他错误处理
+                    current_text = pattern_obj.sub(replacer_for_this_pattern, current_text)
+                    entry_placeholders.extend(single_pattern_replacements)
+                except Exception as e:
+                    print(f"[Warning]: 占位正则替换出现问题！！ pattern '{pattern_obj.pattern}' on key '{key}': {e}")
                     continue
-                
-                # 如果全局计数达到上限，可以提前结束此文本条目的模式遍历
+
                 if global_match_count >= 50:
-                    #print(f"Warning: Global placeholder limit (50) reached while processing key '{key}'. Stopping further replacements for this entry and subsequent entries.")
-                    # 注意：这里仅停止当前条目的进一步模式匹配，
-                    # global_match_count 已达上限，下一个条目开始时也会立即检查。
                     break
 
-
-            placeholder_order[key] = entry_placeholders # 存储这个key的所有替换记录
-            new_dict[key] = current_text # 存储处理后的文本
-
+            placeholder_order[key] = entry_placeholders
+            new_dict[key] = current_text
 
         return new_dict, placeholder_order
 
-    def _build_special_placeholder_pattern(self, code_pattern_list: List[str]) -> List[str]:
-        r"""构建特殊占位符匹配的正则表达式 列表
-        每个模式前后添加 \s* 以匹配可能的空白。
-        对于 \\\\. 模式，增强后的正则变为 \s*\\\\.\s*，这会匹配反斜杠前后可能的空白（包括换行符 \n）。
-        如果文本中的反斜杠附近存在换行符（例如 ...\.\n...），增强后的正则会连带匹配到 \n。
-        """
-        enhanced_patterns = []
-        for p in code_pattern_list:
-            if p:
-                # 使用原始字符串避免过多反斜杠转义问题
-                enhanced = fr"\s*{p}\s*"
-                enhanced_patterns.append(enhanced)
-
-        return enhanced_patterns
-
-    def _build_affixes_patterns(self, code_pattern_list: List[str]) -> Tuple[List[str], List[str]]:
-        """构建前后缀正则表达式 列表 """
-        if not code_pattern_list:
-            return [], []
-        enhanced_patterns = []
-        for p in code_pattern_list:
-            if p:
-                enhanced = fr"\s*{p}\s*"
-                enhanced_patterns.append(enhanced)
-
-        # 前后缀使用相同的模式列表
-        return enhanced_patterns, enhanced_patterns
-
-    def _restore_special_placeholders(self, text_dict: Dict[str, str], placeholder_order: Dict[str, List[Dict[str, str]]]) -> Dict[str, str]:
-        """占位符还原"""
+    # 还原特殊占位符
+    def _restore_special_placeholders(self, text_dict: Dict[str, str],
+                                      placeholder_order: Dict[str, List[Dict[str, str]]]) -> Dict[str, str]:
         new_dic = {}
         for key, text in text_dict.items():
             placeholders_for_key = placeholder_order.get(key, [])
@@ -180,327 +471,199 @@ class TextProcessor(Base):
             if not placeholders_for_key:
                 new_dic[key] = text
             else:
-                # 必须反向还原，因为后面的替换可能包含了前面替换的占位符，
-                # 或者对于 Sakura 的 "↓" * n 格式，长度是递增的。
-                # 反向保证先还原最内层/最后进行的替换。
                 restored_text = text
                 for item in reversed(placeholders_for_key):
                     placeholder_text = item.get("placeholder")
-                    original_text = item.get("original")
-                    # 使用 count=1 确保每次只替换一个，防止一个占位符意外匹配多次
-                    # (虽然 P{n} 应该是唯一的，但 Sakura 的 ↓... 可能不是)
-                    if placeholder_text is not None and original_text is not None:
-                         # 增加保护：确保占位符真的在文本中，防止无限循环或错误
-                         # （理论上应该在，但以防万一）
-                         if placeholder_text in restored_text:
-                             restored_text = restored_text.replace(placeholder_text, original_text, 1)
-                         else:
-                             # 如果占位符意外丢失（例如被翻译引擎修改），记录一个警告
-                             print(f"[Warning]: Placeholder '{placeholder_text}' not found in text for key '{key}' during restoration. Original: '{original_text}'")
-
-
+                    original_text_val = item.get("original")
+                    if placeholder_text is not None and original_text_val is not None:
+                        if placeholder_text in restored_text:
+                            restored_text = restored_text.replace(placeholder_text, original_text_val, 1)
+                        else:
+                            print(f"[Warning]: Placeholder '{placeholder_text}' not found in text for key '{key}' during restoration. Original: '{original_text_val}'")
                 new_dic[key] = restored_text
-
         return new_dic
 
-    def _process_affixes(self, text_dict: Dict[str, str], code_pattern_list: List[str]) -> Tuple[Dict[str, str], Dict[str, List[Dict]], Dict[str, List[Dict]]]:
-        """处理前后缀提取"""
+    # 处理前后缀
+    def _process_affixes(self, text_dict: Dict[str, str], compiled_prefix_patterns: List[re.Pattern],
+                         compiled_suffix_patterns: List[re.Pattern]) -> \
+            Tuple[Dict[str, str], Dict[str, List[Dict]], Dict[str, List[Dict]]]:
         prefix_codes: Dict[str, List[Dict]] = {}
         suffix_codes: Dict[str, List[Dict]] = {}
-        processed_text_dict = {} # 创建新字典以避免修改迭代中的字典
+        processed_text_dict = {}
 
-        prefix_patterns, suffix_patterns = TextProcessor._build_affixes_patterns(self,code_pattern_list)
-
-        for key, text in text_dict.items():
-            current_text = text # 操作副本
+        for key, text_val in text_dict.items():
+            current_text = text_val
             current_prefixes: List[Dict] = []
             current_suffixes: List[Dict] = []
 
-            # 前缀提取
-            for pattern_str in prefix_patterns:
+            for pattern_obj in compiled_prefix_patterns:
                 try:
-                    pattern = re.compile(pattern_str, re.IGNORECASE | re.MULTILINE)
                     while True:
-                        match = pattern.match(current_text)
+                        match = pattern_obj.match(current_text)
                         if match:
                             prefix_text = match.group(0)
-                            current_prefixes.append({"prefix": prefix_text, "pattern": pattern_str})
+                            current_prefixes.append({"prefix": prefix_text, "pattern": pattern_obj.pattern})
                             current_text = current_text[len(prefix_text):]
                         else:
                             break
-                except re.error as e:
-                    print(f"[Warning]: 前缀正则匹配出现问题！！  Regex error for prefix pattern '{pattern_str}' on key '{key}': {e}")
+                except Exception as e:
+                    print(f"[Warning]: 前缀正则匹配出现问题！！ Regex error for prefix pattern '{pattern_obj.pattern}' on key '{key}': {e}")
                     continue
 
-            # 后缀提取
-            for pattern_str in suffix_patterns:
+            # 遍历预编译的后缀正则表达式
+            for pattern_obj in compiled_suffix_patterns:
                 try:
-                    pattern = re.compile(pattern_str, re.IGNORECASE | re.MULTILINE)
-                    # 需要循环查找，因为移除一个后缀后，可能又有新的后缀匹配在末尾
                     made_change = True
                     while made_change:
                         made_change = False
-                        # 从后向前查找匹配似乎更稳妥，但 re 不直接支持
-                        # 使用 finditer 找到所有匹配，然后检查最后一个是否在末尾
                         best_match = None
-                        for match in pattern.finditer(current_text):
+                        for match in pattern_obj.finditer(current_text):
                             if match.end() == len(current_text):
-                                best_match = match # 找到一个末尾匹配
-
+                                best_match = match
                         if best_match:
                             suffix_text = best_match.group(0)
-                            current_suffixes.insert(0, {"suffix": suffix_text, "pattern": pattern_str})
+                            current_suffixes.insert(0, {"suffix": suffix_text, "pattern": pattern_obj.pattern})
                             current_text = current_text[:best_match.start()]
-                            made_change = True # 成功移除，需要再次检查
-
-                except re.error as e:
-                    print(f"[Warning]: 后缀正则匹配出现问题！！  Regex error for suffix pattern '{pattern_str}' on key '{key}': {e}")
+                            made_change = True
+                except Exception as e:
+                    print(f"[Warning]: 后缀正则匹配出现问题！！ Regex error for suffix pattern '{pattern_obj.pattern}' on key '{key}': {e}")
                     continue
 
-
-            # 空文本检查(避免提取完前后缀只剩下空白)
-            if not current_text.strip(): # 检查是否只剩下空白
-                 # 如果提取后文本为空或只有空白，则尝试恢复
+            # 特殊情况：如果移除前后缀后，中间的核心文本变为空白内容，还原最少内容的前后缀。
+            if not current_text.strip():
                 temp_prefix_str = ''.join([p['prefix'] for p in current_prefixes])
                 temp_suffix_str = ''.join([s['suffix'] for s in current_suffixes])
-
-                # 简单的恢复逻辑：如果只有前缀或只有后缀，恢复它。如果都有，恢复较短者。
                 if current_prefixes and current_suffixes:
                     prefix_len = sum(len(p['prefix']) for p in current_prefixes)
                     suffix_len = sum(len(s['suffix']) for s in current_suffixes)
-
                     if prefix_len > suffix_len:
-                        current_text = current_text + temp_suffix_str # 恢复后缀
-                        current_suffixes = [] # 清空记录
+                        current_text = current_text + temp_suffix_str
+                        current_suffixes = []
                     else:
-                        current_text = temp_prefix_str + current_text # 恢复前缀
-                        current_prefixes = [] # 清空记录
-
+                        current_text = temp_prefix_str + current_text
+                        current_prefixes = []
                 elif current_prefixes:
-                     current_text = temp_prefix_str + current_text
-                     current_prefixes = []
+                    current_text = temp_prefix_str + current_text
+                    current_prefixes = []
                 elif current_suffixes:
-                     current_text = current_text + temp_suffix_str
-                     current_suffixes = []
-
+                    current_text = current_text + temp_suffix_str
+                    current_suffixes = []
 
             processed_text_dict[key] = current_text
             prefix_codes[key] = current_prefixes
             suffix_codes[key] = current_suffixes
 
-
         return processed_text_dict, prefix_codes, suffix_codes
 
-
-    def _restore_affixes(self, text_dict: Dict[str, str], prefix_codes: Dict[str, List[Dict]], suffix_codes: Dict[str, List[Dict]]) -> Dict[str, str]:
-        """还原前后缀 """
+    # 还原前后缀
+    def _restore_affixes(self, text_dict: Dict[str, str], prefix_codes: Dict[str, List[Dict]],
+                         suffix_codes: Dict[str, List[Dict]]) -> Dict[str, str]:
         restored_dict = {}
         for key, text in text_dict.items():
-            # 还原前缀：按记录顺序拼接
+            # 按原始顺序拼接所有提取的前缀
             prefix_str = ''.join([item['prefix'] for item in prefix_codes.get(key, [])])
-            # 还原后缀：按记录顺序拼接 (因为记录时是 insert(0,...)，所以直接 join 就是正确的顺序)
+            # 按原始顺序拼接所有提取的后缀
             suffix_str = ''.join([item['suffix'] for item in suffix_codes.get(key, [])])
-
-            restored = f"{prefix_str}{text}{suffix_str}"
-            restored_dict[key] = restored
-
+            restored_dict[key] = f"{prefix_str}{text}{suffix_str}"
         return restored_dict
 
-
-    # 译前替换
-    def replace_before_translation(self, config, text_dict: dict) -> dict:
-        """
-        在翻译前根据配置规则替换文本。优先使用正则表达式。
-
-        Args:
-            config: 包含 pre_translation_data 列表的配置对象。
-            text_dict: 包含待处理文本的字典 {id: text}。
-
-        Returns:
-            处理后的 text_dict。
-        """
-
-        data: list[dict] = config.pre_translation_data or [] # 确保 data 是列表
-
-        # 创建一个新的字典来存储结果，避免在迭代时修改原始字典
+    # 译前替换处理
+    def replace_before_translation(self, text_dict: dict) -> dict:
         processed_text_dict = text_dict.copy()
 
-        for k in processed_text_dict:
-            original_text = processed_text_dict[k]
-            current_text = original_text
+        for k, original_text_val in processed_text_dict.items():
+            current_text = original_text_val
 
-            for i, rule in enumerate(data):
-                regex_pattern = rule.get("regex")
-                src_text = rule.get("src")
-                dst_text = rule.get("dst", "") # 默认为空字符串，用于删除
-
-                # --- 优先处理正则表达式 ---
-                if regex_pattern:
-                    # 使用 re.sub 进行正则替换
-                    # re.sub 会替换所有匹配项
-                    new_text = re.sub(regex_pattern, dst_text, current_text)
-                    if new_text != current_text:
-                        current_text = new_text
-
-                    continue # 继续处理下一条规则
-
-                # --- 如果没有正则表达式或正则未执行，处理 src 文本替换 ---
-                elif src_text:
-                    # 只有当 regex 字段不存在或为空时，才执行 src 替换
-                    if src_text in current_text:
-                        new_text = current_text.replace(src_text, dst_text)
-                        current_text = new_text
-
-            # 更新字典中的值
-            if current_text != original_text:
-                 processed_text_dict[k] = current_text
-
-        return processed_text_dict
-
-    # 译后替换
-    def replace_after_translation(self, config, text_dict: dict) -> dict:
-        """
-        在翻译后根据配置规则替换文本。优先使用正则表达式。
-
-        Args:
-            config: 包含 post_translation_data 列表的配置对象。
-            text_dict: 包含待处理文本的字典 {id: text}。
-
-        Returns:
-            处理后的 text_dict。
-        """
-
-        data: list[dict] = config.post_translation_data or [] # 确保 data 是列表
-
-        processed_text_dict = text_dict.copy()
-
-        for k in processed_text_dict:
-            original_text = processed_text_dict[k]
-            current_text = original_text
-
-            for i, rule in enumerate(data):
-                regex_pattern = rule.get("regex")
+            # 遍历所有预编译的译前规则
+            for rule in self.pre_translation_rules_compiled:
+                compiled_regex_obj = rule.get("compiled_regex")
                 src_text = rule.get("src")
                 dst_text = rule.get("dst", "")
 
-                # --- 优先处理正则表达式 ---
-                if regex_pattern:
-                    new_text = re.sub(regex_pattern, dst_text, current_text)
-                    if new_text != current_text:
-                        current_text = new_text
-                    continue # 只要有 regex 字段就跳过 src
+                # 如果有已经编译好的正则
+                if compiled_regex_obj:
+                    current_text = compiled_regex_obj.sub(dst_text, current_text)
+                    continue
 
-                # --- 如果没有正则表达式或正则未执行，处理 src 文本替换 ---
-                elif src_text:
-                    if src_text in current_text:
-                        new_text = current_text.replace(src_text, dst_text)
-                        current_text = new_text
+                # 没有正则，则按照原文替换
+                elif src_text and src_text in current_text:
+                    current_text = current_text.replace(src_text, dst_text)
 
-            # 更新字典中的值
-            if current_text != original_text:
-                 processed_text_dict[k] = current_text
+            if current_text != original_text_val:
+                processed_text_dict[k] = current_text
 
         return processed_text_dict
 
+    # 译后替换处理
+    def replace_after_translation(self, text_dict: dict) -> dict:
+        processed_text_dict = text_dict.copy()
 
-    # 数字序号预处理
+        for k, original_text_val in processed_text_dict.items():
+            current_text = original_text_val
+
+            # 遍历所有预编译的译后规则
+            for rule in self.post_translation_rules_compiled:
+                compiled_regex_obj = rule.get("compiled_regex")
+                src_text = rule.get("src")
+                dst_text = rule.get("dst", "")
+
+                if compiled_regex_obj:
+                    current_text = compiled_regex_obj.sub(dst_text, current_text)
+                    continue
+
+                elif src_text and src_text in current_text:
+                    current_text = current_text.replace(src_text, dst_text)
+
+            if current_text != original_text_val:
+                processed_text_dict[k] = current_text
+
+        return processed_text_dict
+
+    # 处理数字序列
     def digital_sequence_preprocessing(self, text_dict: dict) -> dict:
-
-        # 数字序号处理
         for k in text_dict:
-            # 匹配以数字+英文句点开头的模式，替换为【数字】
-            text_dict[k] = re.sub(r'^(\d+)\.', r'【\1】', text_dict[k], count=1)
-
+            # 将例如 "1." 替换为 "【1】"，只替换文本开头的第一个匹配项
+            text_dict[k] = self.RE_DIGITAL_SEQ_PRE.sub(r'【\1】', text_dict[k], count=1)
         return text_dict
 
-    #  数字序号恢复
+    # 还原数字序列
     def digital_sequence_recovery(self, text_dict: dict) -> dict:
-
-        # 数字序号恢复
         for k in text_dict:
-            # 匹配以【数字】开头的模式，恢复为数字+英文句点
-            text_dict[k] = re.sub(r'^【(\d+)】', r'\1.', text_dict[k], count=1)
-
+            text_dict[k] = self.RE_DIGITAL_SEQ_REC.sub(r'\1.', text_dict[k], count=1)
         return text_dict
 
-    # 预提取前后缀的空格与换行
-    def strip_and_record_affix_whitespace(self, text_dict):
-        r"""
-        预处理字典中的文本值，移除前后缀的空白字符（空格、换行等），
-        并将移除的信息存储在另一个字典中。
-
-        Args:
-            text_dict (dict): 输入的字典，键为标识符，值为包含潜在前后缀空白的字符串。
-                            例如：{'0': '\n  text  \n'}
-
-        Returns:
-            tuple: 包含两个字典的元组：
-            - processed_text_dict (dict): 处理后的字典，值的文本变得“干净”。
-                                            例如：{'0': 'text'}
-            - processing_info (dict): 存储了每个键对应的前后缀信息的字典。
-                                        例如：{'0': {'prefix': '\n  ', 'suffix': '  \n'}}
-        """
-        processed_text_dict = {}
-        processing_info = {}
-        # 正则表达式：匹配开头的空白字符(^(\s*))，中间的任意字符(.*?)，结尾的空白字符((\s*)$)
-        # re.DOTALL 让 '.' 可以匹配换行符
-        pattern = re.compile(r'^(\s*)(.*?)(\s*)$', re.DOTALL)
+    # 处理前后缀的空格与换行，以及非日语文本（支持多行）
+    def strip_and_record_affixes(self, text_dict: Dict[str, str], source_lang: str) -> \
+            Tuple[Dict[str, str], Dict[str, Dict]]:
+        processed_text_dict: Dict[str, str] = {}
+        processing_info: Dict[str, Dict] = {}
 
         for key, original_text in text_dict.items():
+            # 检查是否是字符串
             if not isinstance(original_text, str):
-                # 如果值不是字符串，可以选择跳过、报错或原样保留
-                # 这里选择原样保留，并且不记录处理信息
                 processed_text_dict[key] = original_text
+                processing_info[key] = self._create_empty_info()
                 continue
 
-            match = pattern.match(original_text)
-            if match:
-                prefix = match.group(1)  # 捕获的前缀空白
-                core_text = match.group(2) # 捕获的中间“干净”文本
-                suffix = match.group(3)  # 捕获的后缀空白
-
-                processed_text_dict[key] = core_text
-                processing_info[key] = {
-                    'prefix': prefix, 
-                    'suffix': suffix
-                }
-            else:
-                # 理论上，上面的正则应该能匹配所有字符串，包括空字符串
-                # 但为了健壮性，可以加个处理（虽然在这个模式下不太可能进入）
-                processed_text_dict[key] = original_text # 原样保留
-                processing_info[key] = {'prefix': '', 'suffix': ''} # 记录为空白
+            # 统一使用多行处理
+            processed_text, info = self._process_multiline_text(original_text, source_lang)
+            processed_text_dict[key] = processed_text
+            processing_info[key] = info
 
         return processed_text_dict, processing_info
 
-    # 还原前后缀的空格与换行
-    def restore_affix_whitespace(self, processing_info, processed_dict):
-        r"""
-        根据预处理时存储的信息，将前后缀空白还原到处理后的（可能已翻译的）文本字典中。
-
-        Args:
-            processed_dict (dict): 经过预处理（且可能已翻译）的字典。
-                                例如：{'0': 'translated text'}
-            processing_info (dict): 包含原始前后缀信息的字典。
-                                    例如：{'0': {'prefix': '\n  ', 'suffix': '  \n'}}
-
-        Returns:
-            dict: 还原了前后缀空白的最终字典。
-                例如：{'0': '\n  translated text  \n'}
-        """
-        restored_text_dict = {}
+    # 还原前后缀的空格与换行（支持多行）
+    def restore_affix_whitespace(self, processing_info: Dict[str, Dict], processed_dict: Dict[str, str]) -> Dict[str, str]:
+        restored_text_dict: Dict[str, str] = {}
 
         for key, core_text in processed_dict.items():
-            if key in processing_info:
-                info = processing_info[key]
-                prefix = info.get('prefix', '') # 安全获取，如果键不存在则返回空字符串
-                suffix = info.get('suffix', '') # 安全获取
-                restored_text_dict[key] = prefix + core_text + suffix
-            else:
-                # 如果某个键在处理信息中不存在（可能在翻译过程中新增或删除了条目）
-                # 则直接保留处理后的文本，不添加前后缀
+            info = processing_info.get(key)
+            if not info:
                 restored_text_dict[key] = core_text
+                continue
+
+            # 使用多行还原逻辑
+            restored_text = self._restore_multiline_text(core_text, info)
+            restored_text_dict[key] = restored_text
 
         return restored_text_dict
-
-
-

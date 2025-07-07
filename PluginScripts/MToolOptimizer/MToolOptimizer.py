@@ -5,10 +5,10 @@ from itertools import zip_longest
 from tqdm import tqdm
 from rich import print
 
-from ModuleFolders.Cache.CacheItem import CacheItem
+from ModuleFolders.Cache.CacheItem import CacheItem, TranslationStatus
 from ModuleFolders.Cache.CacheProject import CacheProject, ProjectType
 from PluginScripts.PluginBase import PluginBase
-from ModuleFolders.Translator.TranslatorConfig import TranslatorConfig
+from ModuleFolders.TaskConfig.TaskConfig import TaskConfig
 
 class MToolOptimizer(PluginBase):
 
@@ -19,7 +19,7 @@ class MToolOptimizer(PluginBase):
         self.description = (
             "MTool 优化器，优化翻译流程，提升翻译质量，至多可减少 40% 的 翻译时间 与 Token 消耗"
             + "\n" + "但可能会带来稳定性下降，翻译错行，翻译不通畅等问题，请酌情开启"
-            + "\n" + "兼容性：支持全部语言；支持全部模型；仅支持 MTool 文本；"
+            + "\n" + "兼容性：支持全部语言；支持全部模型；仅支持 MTool 文本；仅支持翻译流程；"
         )
 
         self.visibility = True          # 是否在插件设置中显示
@@ -29,7 +29,7 @@ class MToolOptimizer(PluginBase):
         self.add_event("preproces_text", PluginBase.PRIORITY.NORMAL)
         self.add_event("postprocess_text", PluginBase.PRIORITY.NORMAL)
 
-    def on_event(self, event: str, config: TranslatorConfig, data: CacheProject) -> None:
+    def on_event(self, event: str, config: TaskConfig, data: CacheProject) -> None:
 
         # 限制文本格式
         if ProjectType.MTOOL not in data.file_project_types:
@@ -51,7 +51,7 @@ class MToolOptimizer(PluginBase):
             self.on_postprocess_text(event, config, mtool_items)
 
     # 文本预处理事件
-    def on_preproces_text(self, event: str, config: TranslatorConfig, items: list[CacheItem]) -> None:
+    def on_preproces_text(self, event: str, config: TaskConfig, items: list[CacheItem]) -> None:
 
         # 检查需要移除的条目
         # 将包含换行符的长句拆分，然后查找与这些拆分后得到的短句相同的句子并移除它们
@@ -60,7 +60,7 @@ class MToolOptimizer(PluginBase):
         print("")
 
         # 记录处理前的条目数量
-        orginal_length = len([v for v in items if v.translation_status == CacheItem.STATUS.EXCLUDED])
+        orginal_length = len([v for v in items if v.translation_status == TranslationStatus.EXCLUDED])
 
         # 找到重复短句条目
         texts_to_delete = set()
@@ -75,14 +75,14 @@ class MToolOptimizer(PluginBase):
         # 移除重复短句条目
         for v in tqdm(items):
             if v.source_text.strip() in texts_to_delete:
-                v.translation_status = CacheItem.STATUS.EXCLUDED
+                v.translation_status = TranslationStatus.EXCLUDED
 
         print("")
-        print(f"[MToolOptimizer] 预处理执行成功，已移除 {len([v for v in items if v.translation_status == CacheItem.STATUS.EXCLUDED]) - orginal_length} 个重复的条目 ...")
+        print(f"[MToolOptimizer] 预处理执行成功，已移除 {len([v for v in items if v.translation_status == TranslationStatus.EXCLUDED]) - orginal_length} 个重复的条目 ...")
         print("")
 
     # 文本后处理事件
-    def on_postprocess_text(self, event: str, config: TranslatorConfig, items: list[CacheItem]) -> None:
+    def on_postprocess_text(self, event: str, config: TaskConfig, items: list[CacheItem]) -> None:
 
         print("")
         print("[MToolOptimizer] 开始执行后处理 ...")
@@ -147,7 +147,7 @@ class MToolOptimizer(PluginBase):
             # 更新短句的译文
             for item in source_text_mapping.get(source.strip(), ()):
                 item.translated_text = translated.strip() if translated.strip() != "" else "　"
-                item.translation_status = CacheItem.STATUS.TRANSLATED
+                item.translation_status = TranslationStatus.TRANSLATED
 
     # 按显示长度切割字符串
     def split_string_by_display_length(self, string: str, display_length: int) -> list[str]:

@@ -1,14 +1,18 @@
+from collections import defaultdict
 import os
+import re
 import threading
 import time
 from dataclasses import fields
-from typing import List, Tuple
+from typing import Dict, List, Tuple
 
+import msgspec
 import rapidjson as json
 
 from Base.Base import Base
+from ModuleFolders.TaskConfig.TaskType import TaskType
 from ModuleFolders.Cache.CacheFile import CacheFile
-from ModuleFolders.Cache.CacheItem import CacheItem
+from ModuleFolders.Cache.CacheItem import CacheItem, TranslationStatus
 from ModuleFolders.Cache.CacheProject import (
     CacheProject,
     CacheProjectStatistics
@@ -21,14 +25,11 @@ class CacheManager(Base):
     def __init__(self) -> None:
         super().__init__()
 
-        # 默认值
-        self.project = CacheProject()
-
         # 线程锁
         self.file_lock = threading.Lock()
 
         # 注册事件
-        self.subscribe(Base.EVENT.TRANSLATION_START, self.start_interval_saving)
+        self.subscribe(Base.EVENT.TASK_START, self.start_interval_saving)
         self.subscribe(Base.EVENT.APP_SHUT_DOWN, self.app_shut_down)
 
     def start_interval_saving(self, event: int, data: dict):
@@ -62,8 +63,19 @@ class CacheManager(Base):
         path = os.path.join(self.save_to_file_require_path, "cache", "AinieeCacheData.json")
         with self.file_lock:
             os.makedirs(os.path.dirname(path), exist_ok=True)
-            with open(path, "w", encoding="utf-8") as writer:
-                writer.write(json.dumps(self.project.to_dict(), ensure_ascii=False))
+            content_bytes = msgspec.json.encode(self.project)
+            with open(path, "wb") as writer:
+                writer.write(content_bytes)
+
+            # 写入项目整体翻译状态文件
+            total_line = self.project.stats_data.total_line # 获取需翻译总行数
+            line = self.project.stats_data.line # 获取已翻译行数
+            project_name = self.project.project_name # 获取项目名字
+            json_data = {"total_line": total_line, "line": line, "project_name": project_name }
+
+            json_path = os.path.join(self.save_to_file_require_path, "cache", "ProjectStatistics.json")
+            with open(json_path, "w", encoding="utf-8") as writer:
+                json.dump(json_data, writer, ensure_ascii=False, indent=4)  # 直接写入 JSON 数据
 
     # 保存缓存到文件的定时任务
     def save_to_file_tick(self) -> None:
@@ -72,7 +84,6 @@ class CacheManager(Base):
             time.sleep(self.SAVE_INTERVAL)
             if getattr(self, "save_to_file_require_flag", False):
                 self.save_to_file()
-                self.emit(Base.EVENT.CACHE_FILE_AUTO_SAVE, {})
                 self.save_to_file_require_flag = False
 
     # 请求保存缓存到文件
@@ -95,14 +106,17 @@ class CacheManager(Base):
 
     @classmethod
     def read_from_file(cls, cache_path) -> CacheProject:
-        with open(cache_path, "r", encoding="utf-8") as reader:
-            content = json.load(reader)
-        if isinstance(content, list):
-            # 旧版缓存
-            return cls._read_from_old_content(content)
-        else:
-            # 新版缓存
-            return CacheProject.from_dict(content)
+        with open(cache_path, "rb") as reader:
+            content_bytes = reader.read()
+        try:
+            # 反序列化严格按照dataclass定义，如source_text这种非optional类型不能为None，否则反序列化失败
+            return msgspec.json.decode(content_bytes, type=CacheProject)
+        except msgspec.ValidationError:
+            content = json.loads(content_bytes.decode('utf-8'))
+            if isinstance(content, dict):
+                return CacheProject.from_dict(content)
+            else:
+                return cls._read_from_old_content(content)
 
     @classmethod
     def _read_from_old_content(cls, content: list) -> CacheProject:
@@ -128,7 +142,12 @@ class CacheManager(Base):
         for old_item in data_iter:
             storage_path = old_item["storage_path"]
             if storage_path not in files_props:
-                files_props[storage_path] = {"items": [], "extra": {}, "file_project_type": project_data["project_type"]}
+                files_props[storage_path] = {
+                    "items": [],
+                    "extra": {},
+                    "file_project_type": project_data["project_type"],
+                    'storage_path': storage_path,
+                }
             new_item = CacheItem.from_dict(old_item)
             for k, v in old_item.items():
                 if k == 'file_name':
@@ -164,9 +183,9 @@ class CacheManager(Base):
         has_untranslated = False
         for item in self.project.items_iter():
             status = item.translation_status
-            if status == CacheItem.STATUS.TRANSLATED:
+            if status == TranslationStatus.TRANSLATED:
                 has_translated = True
-            elif status == CacheItem.STATUS.UNTRANSLATED:
+            elif status == TranslationStatus.UNTRANSLATED:
                 has_untranslated = True
             if has_translated and has_untranslated:
                 return True
@@ -180,12 +199,9 @@ class CacheManager(Base):
             return []
 
         # 计算实际要获取的上文的起始索引 (包含)
-        # max(0, ...) 确保不会低于列表下界
-        # 起始点 start_idx - previous_item_count
         from_idx = max(0, start_idx - previous_item_count)
 
         # 计算实际要获取的上文的结束索引 (不包含)
-        # min(start_idx, len(all_items)) 确保不会超过当前块的起始或列表上界
         to_idx = min(start_idx, len(all_items)) # 通常就是 start_idx
 
         # 如果计算出的范围无效，返回空列表
@@ -198,14 +214,18 @@ class CacheManager(Base):
         return collected
 
     # 生成待翻译片段
-    def generate_item_chunks(self, limit_type: str, limit_count: int, previous_line_count: int) -> \
+    def generate_item_chunks(self, limit_type: str, limit_count: int, previous_line_count: int, task_mode) -> \
             Tuple[List[List[CacheItem]], List[List[CacheItem]], List[str]]:
         chunks, previous_chunks, file_paths = [], [], []  # 添加 file_paths 初始化
 
         # 遍历所有文件
         for file in self.project.files.values():
-            # 过滤掉已翻译的条目
-            items = [item for item in file.items if item.translation_status == CacheItem.STATUS.UNTRANSLATED]
+
+            # 根据任务模式筛选条目
+            if task_mode == TaskType.TRANSLATION : # 选取未翻译条目
+                items = [item for item in file.items if item.translation_status == TranslationStatus.UNTRANSLATED]
+            elif task_mode == TaskType.POLISH: # 选取已翻译条目
+                items = [item for item in file.items if item.translation_status == TranslationStatus.TRANSLATED]
 
             # 如果没有需要翻译的条目，则跳过
             if not items:
@@ -253,3 +273,204 @@ class CacheManager(Base):
 
         # 返回结果列表
         return chunks, previous_chunks, file_paths 
+
+
+    # 获取文件层级结构
+    def get_file_hierarchy(self) -> Dict[str, List[str]]:
+        """
+        从缓存中读取文件列表，并按文件夹层级组织。
+        """
+        hierarchy = defaultdict(list)
+        if not self.project or not self.project.files:
+            return {}
+            
+        with self.file_lock:
+            for file_path in self.project.files.keys():
+                # os.path.split 将路径分割成 (目录, 文件名)
+                directory, filename = os.path.split(file_path)
+                # 如果文件在根目录，directory会是空字符串，用'.'代替
+                if not directory:
+                    directory = '.'
+                hierarchy[directory].append(filename)
+
+        # 对每个文件夹下的文件名进行排序
+        for dir_path in hierarchy:
+            hierarchy[dir_path].sort()
+            
+        return dict(hierarchy)
+
+    # 更新缓存中的特定文本项
+    def update_item_text(self, storage_path: str, text_index: int, field_name: str, new_text: str) -> None:
+        """
+        更新缓存中指定文件、指定索引的文本项的某个字段。
+        """
+        with self.file_lock:
+            cache_file = self.project.get_file(storage_path)
+            if not cache_file:
+                print(f"Error: 找不到文件 {storage_path}")
+                return
+            
+            item_to_update = cache_file.get_item(text_index)
+            
+            # 修改原文
+            if field_name == 'source_text':
+                if new_text and new_text.strip():
+                    if item_to_update.source_text != new_text:
+                        item_to_update.source_text = new_text
+
+            # 修改译文
+            elif field_name == 'translated_text':
+                item_to_update.translated_text = new_text
+                # 如果原文和译文不同，则标记为已翻译
+                if new_text and new_text.strip():
+                    if item_to_update.source_text != new_text:
+                            item_to_update.translation_status = TranslationStatus.TRANSLATED
+
+            # 修改润文
+            elif field_name == 'polished_text':
+                item_to_update.polished_text = new_text
+                # 只要有润文，就标记为已润色
+                if new_text and new_text.strip():
+                    item_to_update.translation_status = TranslationStatus.POLISHED
+            else:
+                print(f"Error: 不支持更新字段 {field_name}")
+                return
+
+    # 缓存重编排方法
+    def reformat_and_splice_cache(self, file_path: str, formatted_data: dict, selected_item_indices: list[int]) -> list[CacheItem] | None:
+        """
+        根据格式化后的数据，对指定文件中的选中项进行“切片和拼接”操作。
+        此操作会移除旧的选中项，并在原位置插入新的项。
+
+        Args:
+            file_path (str): 要更新的文件路径。
+            formatted_data (dict): 从API返回的格式化数据。
+                                   格式: {'0': {'text': '...', 'blank_lines_after': ...}, ...}
+            selected_item_indices (list[int]): 原始被选中项的 text_index 列表。
+
+        Returns:
+            list[CacheItem] | None: 成功则返回代表整个文件的、更新后的完整CacheItem列表，否则返回None。
+        """
+        with self.file_lock:
+            cache_file = self.project.get_file(file_path)
+            if not cache_file:
+                self.error(f"在缓存中找不到文件: {file_path}")
+                return None
+            
+            original_items = cache_file.items
+            if not selected_item_indices or not original_items:
+                return original_items # 如果没有选中项或文件为空，则不进行任何操作
+
+            # 创建新的CacheItem
+            newly_created_items = []
+            language_stats = cache_file.language_stats
+            
+            # 为了保证text_index的全局唯一性，从当前所有item的最大index开始递增
+            max_text_index = 0
+            for item in self.project.items_iter():
+                if item.text_index > max_text_index:
+                    max_text_index = item.text_index
+
+            sorted_formatted_data = sorted(formatted_data.items(), key=lambda x: int(x[0]))
+            
+            for _, item_data in sorted_formatted_data:
+                max_text_index += 1
+                new_item = CacheItem(
+                    text_index=max_text_index,
+                    source_text=item_data.get('text', ''),
+                    translation_status=TranslationStatus.UNTRANSLATED,
+                    lang_code=language_stats[0] if language_stats else None,
+                )
+                new_item.set_extra('line_break', item_data.get('blank_lines_after', 0))
+                newly_created_items.append(new_item)
+
+            # 找到插入点和要替换的范围
+            selected_indices_set = set(selected_item_indices)
+            
+            # 找到选中范围在原列表中的起始和结束index
+            start_pos = next(i for i, item in enumerate(original_items) if item.text_index in selected_indices_set)
+            end_pos = next(i for i, item in reversed(list(enumerate(original_items))) if item.text_index in selected_indices_set)
+
+            # 构建最终的 item 列表
+            final_items = (
+                original_items[:start_pos] + 
+                newly_created_items + 
+                original_items[end_pos + 1:]
+            )
+
+            # 更新缓存
+            cache_file.items = final_items
+            if hasattr(cache_file, "items_index_dict"):
+                del cache_file.items_index_dict # 清除旧缓存，以便重新计算
+
+            return final_items
+
+    # 缓存全搜索方法
+    def search_items(self, query: str, scope: str, is_regex: bool) -> list:
+        """
+        在整个项目中搜索条目。
+
+        Args:
+            query (str): 搜索查询字符串。
+            scope (str): 搜索范围 ('all', 'source_text', 'translated_text', 'polished_text')。
+            is_regex (bool): 是否使用正则表达式。
+
+        Returns:
+            list: 包含元组 (file_path, original_row_num, CacheItem) 的结果列表。
+        """
+        results = []
+        fields_to_check = []
+
+        if scope == 'all':
+            fields_to_check = ['source_text', 'translated_text', 'polished_text']
+        else:
+            fields_to_check = [scope]
+
+        try:
+            if is_regex:
+                # 预编译正则表达式以提高效率
+                regex = re.compile(query)
+                matcher = lambda text: regex.search(text)
+            else:
+                matcher = lambda text: query in text
+        except re.error as e:
+            # 正则表达式无效，可以发出一个错误信号或直接返回空
+            self.error(f"无效的正则表达式: {e}")
+            # 这里可以向UI发送一个错误提示
+            return []
+
+        with self.file_lock:
+            for file_path, cache_file in self.project.files.items():
+                for item_index, item in enumerate(cache_file.items):
+                    found = False
+                    for field_name in fields_to_check:
+                        text_to_check = getattr(item, field_name, None)
+                        if text_to_check and matcher(text_to_check):
+                            # (文件路径, 原始行号, 完整的CacheItem对象)
+                            results.append((file_path, item_index + 1, item))
+                            found = True
+                            break  # 找到一个匹配就跳出字段循环，避免重复添加
+                    if found:
+                        continue
+        return results
+
+    # 获取全部的原文与文件路径
+    def get_all_source_items(self) -> list:
+        """
+        获取项目中所有文件的所有原文文本项。
+        Returns:
+            list: 包含字典的列表，每个字典代表一个需要处理的条目。
+                  格式: [{"source_text": str, "file_path": str}, ...]
+        """
+        all_items_data = []
+        with self.file_lock:
+            for file_path, cache_file in self.project.files.items():
+                for item in cache_file.items:
+                    # 只添加包含有效原文的条目
+                    if item.source_text and item.source_text.strip():
+                        all_items_data.append({
+                            "source_text": item.source_text,
+                            "file_path": file_path
+                        })
+        return all_items_data
+

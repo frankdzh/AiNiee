@@ -23,26 +23,22 @@ class TransWriter(BaseTranslatedWriter):
         for item in cache_file.items:
             file_category = item.get_extra("file_category", "")
             data_index = item.get_extra("data_index", "")
-            new_translation = item.translated_text
+            tags = item.get_extra("tags", None)
+            new_translation = item.final_text
             name = item.get_extra("name", "")
 
             # 导航并更新，带有检查
             category_data = trans_content["project"]["files"][file_category]
-            data_list = category_data["data"]
-
-            # 检查是否存在该名字字段，并提取
-            parameters_list = None # 先设为 None
-            if "parameters" in category_data:
-                parameters_list = category_data["parameters"]
+            data_list = category_data["data"] # 要直接相关，而不是获取，才能修改到文件内容
+            tags_list = category_data["tags"]
+            
+            # 补充或者创建一样长度的tags列表，与文本列表长度一致
+            tags_list =  self.align_lists(data_list, tags_list)
 
             # 如果有人名信息
             if name:
                 # 分割人名与文本
                 name, new_translation = self.extract_strings(name, new_translation)
-
-                # 更新人名翻译
-                if parameters_list:
-                    parameters_list[data_index][0]["translation"] = name
 
             # 仅当翻译实际改变时才写入，译文文本在第二个元素
             if len(data_list[data_index]) > 1:  # 检查长度是否至少为2,保证有译文位置
@@ -52,11 +48,18 @@ class TransWriter(BaseTranslatedWriter):
                 # 处理列表只有一个元素或没有元素的情况
                 data_list[data_index].append(new_translation)
 
+            # 写回颜色标签
+            tags_list[data_index] = tags
+
         # 写回修改后的内容
         json_content = json.dumps(trans_content, ensure_ascii=False, indent=4)
         translation_file_path.write_text(json_content, encoding="utf-8")
 
     def extract_strings(self, name, dialogue):
+        # 验证数据类型
+        if not isinstance(dialogue, str) or not isinstance(name, str):
+            return name, dialogue
+
         if dialogue.startswith("["):
             # 计算原name中的"]"数量
             count_in_name = name.count("]")
@@ -82,6 +85,19 @@ class TransWriter(BaseTranslatedWriter):
 
         # 其他情况直接返回原值
         return name, dialogue
+
+
+    def align_lists(self, data_list, tags_list):
+        # 如果 tags_list 是 None，初始化为空列表
+        if tags_list is None:
+            tags_list = []
+        
+        # 计算需要补充的 None 的个数
+        diff = len(data_list) - len(tags_list)
+        if diff > 0:
+            # 如果 data_list 更长，补充 None 到 tags_list
+            tags_list.extend([None] * diff)
+        return tags_list
 
     @classmethod
     def get_project_type(self):

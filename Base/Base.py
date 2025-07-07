@@ -15,36 +15,55 @@ class Event():
 
     API_TEST_DONE = 100                             # API 测试完成
     API_TEST_START = 101                            # API 测试开始
-    TRANSLATION_START = 210                         # 翻译开始
-    TRANSLATION_UPDATE = 220                        # 翻译状态更新
-    TRANSLATION_STOP = 230                          # 翻译停止
-    TRANSLATION_STOP_DONE = 231                     # 翻译停止完成
-    TRANSLATION_CONTINUE_CHECK = 240                # 继续翻译状态检查
-    TRANSLATION_CONTINUE_CHECK_DONE = 241           # 继续翻译状态检查完成
-    TRANSLATION_MANUAL_EXPORT = 250                 # 翻译结果手动导出
-    CACHE_FILE_AUTO_SAVE = 300                      # 缓存文件自动保存
-    APP_SHUT_DOWN = 1000                            # 应用关闭
+    TASK_START = 210                         # 翻译开始
+    TASK_UPDATE = 220                        # 翻译状态更新
+    TASK_STOP = 230                          # 翻译停止
+    TASK_STOP_DONE = 231                     # 翻译停止完成
+    TASK_COMPLETED = 232                          # 翻译完成
 
-    NEW_PROCESS_START = 500     # 新流程开始
-    NEW_PROCESS_DONE = 501      # 新流程完成
+    TASK_CONTINUE_CHECK = 240                # 继续翻译状态检查
+    TASK_CONTINUE_CHECK_DONE = 241           # 继续翻译状态检查完成
+    TASK_MANUAL_EXPORT = 250                 # 翻译结果手动导出
+    CACHE_FILE_AUTO_SAVE = 300                      # 缓存文件自动保存
+
 
     APP_UPDATE_CHECK: int = 600                             # 检查更新
     APP_UPDATE_CHECK_DONE: int = 610                        # 检查更新完成
     APP_UPDATE_DOWNLOAD: int = 620                          # 下载应用
     APP_UPDATE_DOWNLOAD_UPDATE: int = 630                   # 下载应用更新
 
-    GLOSS_TRANSLATION_START = 700                           # 术语表翻译 开始
-    GLOSS_TRANSLATION_DONE = 701                            # 术语表翻译 完成
+    GLOSS_TASK_START = 700                           # 术语表翻译 开始
+    GLOSS_TASK_DONE = 701                            # 术语表翻译 完成
+
+    TABLE_TRANSLATE_START = 800                      # 表格翻译 开始
+    TABLE_TRANSLATE_DONE = 801                       # 表格翻译 完成
+    TABLE_POLISH_START = 810                      # 表格润色 开始
+    TABLE_POLISH_DONE = 811                      # 表格润色 完成    
+    TABLE_FORMAT_START = 820                      # 表格排版 开始
+    TABLE_FORMAT_DONE = 821                      # 表格排版 完成   
+
+    TERM_EXTRACTION_START = 830                  # 术语提取开始
+    TERM_EXTRACTION_DONE = 831                     
+
+    TERM_TRANSLATE_SAVE_START = 832              # 实体提取开始
+    TERM_TRANSLATE_SAVE_DONE = 833 
+
+    TABLE_UPDATE = 898                             # 表格更新
+    TABLE_FORMAT = 899                             # 表格重排
+
+    APP_SHUT_DOWN = 99999                          # 应用关闭
 
 # 软件运行状态列表
 class Status():
 
     IDLE = 1000                                     # 无任务
-    TRANSLATING = 3000                              # 翻译中
-    STOPING = 4000                                  # 停止中
+    TASKING = 1001                                  # 任务中
+    STOPING = 1002                                  # 停止中
+    TASKSTOPPED = 1003                              # 任务已停止
+    
     API_TEST = 2000                                 # 接口测试中
-    GLOSS_TRANSLATION = 5000                        # 术语表翻译中
-
+    GLOSS_TASK = 3000                               # 术语表翻译中
+    TABLE_TASK = 4001                               # 表格任务中
 
 class Base():
 
@@ -152,12 +171,21 @@ class Base():
     def warning(self, msg: str) -> None:
         print(f"[[red]WARNING[/]] {msg}")
 
+    def get_parent_window(self):
+        """统一获取父窗口对象"""
+        if hasattr(self, 'window'):
+            if callable(self.window):
+                return self.window()
+            else:
+                return self.window
+        return None
+
     # Toast
     def info_toast(self, title: str, content: str) -> None:
         InfoBar.info(
             title = title,
             content = content,
-            parent = self,
+            parent = self.get_parent_window(),
             duration = 2500,
             orient = Qt.Horizontal,
             position = InfoBarPosition.TOP,
@@ -169,7 +197,7 @@ class Base():
         InfoBar.error(
             title = title,
             content = content,
-            parent = self,
+            parent = self.get_parent_window(),
             duration = 2500,
             orient = Qt.Horizontal,
             position = InfoBarPosition.TOP,
@@ -181,7 +209,7 @@ class Base():
         InfoBar.success(
             title = title,
             content = content,
-            parent = self,
+            parent = self.get_parent_window(),
             duration = 2500,
             orient = Qt.Horizontal,
             position = InfoBarPosition.TOP,
@@ -193,7 +221,7 @@ class Base():
         InfoBar.warning(
             title = title,
             content = content,
-            parent = self,
+            parent = self.get_parent_window(),
             duration = 2500,
             orient = Qt.Horizontal,
             position = InfoBarPosition.TOP,

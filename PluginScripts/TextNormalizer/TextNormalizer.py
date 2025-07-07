@@ -2,7 +2,7 @@ import itertools
 import unicodedata
 
 from PluginScripts.PluginBase import PluginBase
-from ModuleFolders.Translator.TranslatorConfig import TranslatorConfig
+from ModuleFolders.TaskConfig.TaskConfig import TaskConfig
 
 class TextNormalizer(PluginBase):
 
@@ -85,7 +85,7 @@ class TextNormalizer(PluginBase):
         self.description = (
             "文本规范器，对文本中不规范的字符（例如半角片假名）进行修正，按需开启"
             + "\n"
-            + "兼容性：支持英语、日语；支持全部模型；支持全部文本格式；"
+            + "兼容性：支持英语、日语；支持全部模型；支持全部文本格式；仅支持翻译流程；"
         )
 
         self.visibility = True  # 是否在插件设置中显示
@@ -93,12 +93,12 @@ class TextNormalizer(PluginBase):
 
         self.add_event("normalize_text", PluginBase.PRIORITY.NORMAL)
 
-    def on_event(self, event: str, config: TranslatorConfig, data: dict) -> None:
+    def on_event(self, event: str, config: TaskConfig, data: dict) -> None:
         if event in ("normalize_text",):
             self.on_normalize_text(event, config, data)
 
     # 文本规范化事件
-    def on_normalize_text(self, event: str, config: TranslatorConfig, data: dict) -> None:
+    def on_normalize_text(self, event: str, config: TaskConfig, data: dict) -> None:
         for k in data.keys():
             data[k] = self.normalize(data.get(k, ""))
 

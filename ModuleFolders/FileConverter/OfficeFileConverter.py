@@ -7,6 +7,7 @@ class OfficeFileConverter(BaseFileConverter):
 
     FILE_SUFFIX_MAPPING = {
         ".doc": 0,  # wdFormatDocument
+        ".rtf": 6,  # wdFormatRTF
         ".docx": 16,  # wdFormatDocumentDefault
         ".pdf": 17,  # wdFormatPDF
     }
@@ -29,7 +30,8 @@ class OfficeFileConverter(BaseFileConverter):
     def __exit__(self, exc_type, exc, exc_tb):
         import pythoncom
 
-        if self.office:
+        # Dispatch函数会复用已有的Word进程，多次退出会导致后面的com对象没有Quit函数
+        if self.office and hasattr(self.office, 'Quit'):
             self.office.Quit()
         pythoncom.CoUninitialize()
 
@@ -53,6 +55,10 @@ class OfficeFileConverter(BaseFileConverter):
         # 打开文件另存为
         doc = self.office.Documents.Open(str(input_file_path), ReadOnly=1)
         try:
+            # 禁用校对，防止把段落切碎
+            doc_range = doc.Content
+            doc_range.NoProofing = True
+
             doc.SaveAs(str(output_file_path), self.FILE_SUFFIX_MAPPING[output_file_path.suffix])
         finally:
             doc.Close()

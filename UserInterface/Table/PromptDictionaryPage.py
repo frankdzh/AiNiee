@@ -1,75 +1,130 @@
 import copy
 import rapidjson as json
-from qfluentwidgets import Action
-from qfluentwidgets import FluentIcon
-from qfluentwidgets import MessageBox
-from qfluentwidgets import TableWidget
-from PyQt5.QtCore import QEvent, Qt
-from PyQt5.QtWidgets import QFrame
-from PyQt5.QtWidgets import QFileDialog
-from PyQt5.QtWidgets import QHeaderView
-from PyQt5.QtWidgets import QLayout
-from PyQt5.QtWidgets import QVBoxLayout
-from PyQt5.QtWidgets import QTableWidgetItem
+from qfluentwidgets import (Action, FluentIcon, MessageBox, TableWidget, RoundMenu,
+                            LineEdit, DropDownPushButton, ToolButton, TransparentPushButton, TransparentToolButton, BodyLabel)
+
+from PyQt5.QtCore import QEvent, Qt, QPoint, QTimer
+from PyQt5.QtWidgets import ( QFrame, QFileDialog, QHeaderView, QLayout, QVBoxLayout,
+                             QTableWidgetItem, QHBoxLayout, QWidget,QAbstractItemView)
 
 from Base.Base import Base
 from UserInterface.TableHelper.TableHelper import TableHelper
 from UserInterface.NameExtractor.NameExtractor import NameExtractor
-from Widget.CommandBarCard import CommandBarCard
 from Widget.SwitchButtonCard import SwitchButtonCard
 from UserInterface import AppFluentWindow
 
-# 改进点: 部分功能代码需要合并进TableHelper中
 class PromptDictionaryPage(QFrame, Base):
 
-    # 表格每列对应的数据字段
-    KEYS = (
-        "src",
-        "dst",
-        "info",
-    )
+    KEYS = ("src", "dst", "info",)
+    COLUMN_NAMES = {0: "原文",1: "译文",2: "描述",}
 
     def __init__(self, text: str, window: AppFluentWindow) -> None:
-        super().__init__(parent = window)
+        super().__init__(parent=window)
         self.setObjectName(text.replace(" ", "-"))
 
-        # 默认配置
         self.default = {
             "prompt_dictionary_switch": False,
             "prompt_dictionary_data": [],
         }
 
-        # 订阅术语表完成事件
-        self.subscribe(Base.EVENT.GLOSS_TRANSLATION_DONE, self.glossary_translation_done)
-
-        # 载入并保存默认配置
+        # 订阅术语表翻译完成事件
+        self.subscribe(Base.EVENT.GLOSS_TASK_DONE, self.glossary_translation_done)
+        # 读取配置
         config = self.save_config(self.load_config_from_default())
 
-        # 设置主容器
+        # 搜索相关属性
+        self._search_results = []
+        self._current_search_index = -1
+        self._search_timer = QTimer(self)
+        self._search_timer.setSingleShot(True)
+        self._search_timer.setInterval(300)
+        self._search_timer.timeout.connect(self._perform_search)
+        self._current_search_field_index = -1
+
+        # 排序相关属性
+        self._sort_column_index = -1
+        self._sort_order = Qt.AscendingOrder
+
+        # 工具栏切换状态
+        self._secondary_toolbar_visible = False # 新增：追踪副工具栏状态
+
         self.container = QVBoxLayout(self)
         self.container.setSpacing(8)
-        self.container.setContentsMargins(24, 24, 24, 24) # 左、上、右、下
+        self.container.setContentsMargins(24, 24, 24, 24)
 
-        # 添加控件
         self.add_widget_head(self.container, config, window)
         self.add_widget_body(self.container, config, window)
-        self.add_widget_foot(self.container, config, window)
 
-    # 页面每次展示时触发
+    # 翻译字段名字
+    def _get_translated_column_name(self, index: int) -> str:
+        return self.tra(self.COLUMN_NAMES.get(index, f"字段{index+1}"))
+
+    # 打开页面事件
     def showEvent(self, event: QEvent) -> None:
         super().showEvent(event)
-        # 页面显示时，更新
         self.update_table()
 
+    # 更新表格内容及状态
     def update_table(self) -> None:
-        # 读取配置文件
         config = self.load_config()
-        # 向表格更新数据,只添加新的内容，而不会减项
         TableHelper.update_to_table(self.table, config["prompt_dictionary_data"], PromptDictionaryPage.KEYS)
-        
-    # 头部
-    def add_widget_head(self, parent: QLayout, config: dict, window: AppFluentWindow) -> None:
+        self._reset_search()
+        self._reset_sort_indicator()
 
+    # 右键菜单内容
+    def show_table_context_menu(self, pos: QPoint):
+        menu = RoundMenu(parent=self.table)
+        has_selection = bool(self.table.selectionModel().selectedRows())
+
+        if has_selection:
+            menu.addAction(Action(FluentIcon.ADD_TO, self.tra("插入行"), triggered=self._handle_insert_row))
+            menu.addAction(Action(FluentIcon.REMOVE_FROM, self.tra("删除行"), triggered=self._handle_remove_selected_rows))
+            menu.addSeparator()
+
+        row_count = self.table.rowCount()
+        row_count_action = Action(FluentIcon.LEAF,f"{self.tra('全部行数')}: {row_count}")
+        row_count_action.setEnabled(False)
+        menu.addAction(row_count_action)
+
+        global_pos = self.table.mapToGlobal(pos)
+        menu.exec_(global_pos, ani=True)
+
+    # 删除含操作
+    def _handle_remove_selected_rows(self) -> None:
+        indices = self.table.selectionModel().selectedRows()
+        if not indices:
+            return
+
+        rows_to_remove = sorted([index.row() for index in indices], reverse=True)
+
+        self.table.setUpdatesEnabled(False)
+        for row in rows_to_remove:
+            self.table.removeRow(row)
+        self.table.setUpdatesEnabled(True)
+
+        self._reset_search()
+        self._reset_sort_indicator()
+        self.success_toast("", self.tra("选取行已移除") + "...")
+
+    # 插入行操作
+    def _handle_insert_row(self) -> None:
+        selected_rows = {item.row() for item in self.table.selectedItems()}
+        insert_pos = self.table.rowCount()
+        if selected_rows:
+             insert_pos = max(selected_rows) + 1
+
+        self.table.insertRow(insert_pos)
+        new_item = QTableWidgetItem("")
+        self.table.setItem(insert_pos, 0, new_item)
+        self.table.scrollToItem(new_item, QAbstractItemView.ScrollHint.PositionAtCenter)
+        self.table.selectRow(insert_pos)
+        self.table.editItem(self.table.item(insert_pos, 0))
+
+        self._reset_sort_indicator()
+        self.success_toast("", self.tra("新行已插入") + "...")
+
+    # 添加头部布局内容
+    def add_widget_head(self, parent: QLayout, config: dict, window: AppFluentWindow) -> None:
         def init(widget: SwitchButtonCard) -> None:
             widget.set_checked(config.get("prompt_dictionary_switch"))
 
@@ -81,16 +136,17 @@ class PromptDictionaryPage(QFrame, Base):
         parent.addWidget(
             SwitchButtonCard(
                 self.tra("术语表"),
-                self.tra(
-                "通过构建术语表来引导模型翻译，可实现统一翻译、补充信息等功能\n触发机制: 文本含有原名\n填写示例:  ダリヤ  |  达莉雅  |  女性的名字"
-                ),
-                init = init,
-                checked_changed = checked_changed,
+                self.tra("通过构建术语表来引导模型翻译，可实现统一翻译、补充信息等功能\n△触发机制: 文本含有原名  ◯填写示例:  ダリヤ  |  达莉雅  |  女性的名字"),
+                init=init,
+                checked_changed=checked_changed,
             )
         )
 
-    # 主体
+    # 添加主题布局内容
     def add_widget_body(self, parent: QLayout, config: dict, window: AppFluentWindow) -> None:
+        toolbar_widget = self._create_search_toolbar()
+        parent.addWidget(toolbar_widget)
+        parent.setSpacing(10)
 
         def item_changed(item: QTableWidgetItem) -> None:
             item.setTextAlignment(Qt.AlignCenter)
@@ -98,326 +154,485 @@ class PromptDictionaryPage(QFrame, Base):
         self.table = TableWidget(self)
         parent.addWidget(self.table)
 
-        # 设置表格属性
-        self.table.setBorderRadius(4)
+        self.table.setBorderRadius(8)
         self.table.setBorderVisible(True)
-        self.table.setWordWrap(False)
+        self.table.setWordWrap(True)
         self.table.setColumnCount(len(PromptDictionaryPage.KEYS))
-        self.table.resizeRowsToContents() # 设置行高度自适应内容
-        self.table.resizeColumnsToContents() # 设置列宽度自适应内容
-        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch) # 撑满宽度
+        self.table.verticalHeader().hide()
+        self.table.setAlternatingRowColors(True)
+        self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.table.setEditTriggers(QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked | QAbstractItemView.EditKeyPressed)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.table.customContextMenuRequested.connect(self.show_table_context_menu)
         self.table.itemChanged.connect(item_changed)
 
-        # 设置水平表头并隐藏垂直表头
-        info_cont1 = self.tra("原文")
-        info_cont2 = self.tra("译文")
-        info_cont3 = self.tra("描述")
-        self.table.verticalHeader().setDefaultAlignment(Qt.AlignCenter)
-        self.table.setHorizontalHeaderLabels(
-            [
-                info_cont1,
-                info_cont2,
-                info_cont3,
-            ],
-        )
+        header_labels = [self._get_translated_column_name(i) for i in range(len(PromptDictionaryPage.KEYS))]
+        self.table.setHorizontalHeaderLabels(header_labels)
+        self.table.setSortingEnabled(False)
+        self.table.horizontalHeader().setSortIndicatorShown(True)
+        self.table.horizontalHeader().sectionClicked.connect(self._sort_table_by_column)
+        self.table.resizeRowsToContents()
+        self._reset_sort_indicator()
 
-        # 向表格更新数据
+    def _reset_sort_indicator(self):
+        self._sort_column_index = -1
+        self._sort_order = Qt.AscendingOrder
+        if hasattr(self, 'table'):
+            self.table.horizontalHeader().setSortIndicator(-1, Qt.AscendingOrder)
+
+    def _sort_table_by_column(self, logicalIndex: int):
+        if self._sort_column_index == logicalIndex:
+            self._sort_order = Qt.DescendingOrder if self._sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        else:
+            self._sort_column_index = logicalIndex
+            self._sort_order = Qt.AscendingOrder
+
+        data = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+        try:
+            sort_key_name = PromptDictionaryPage.KEYS[logicalIndex]
+        except IndexError:
+            self.logger.warning(f"Invalid column index {logicalIndex} for sorting.")
+            return
+
+        def get_sort_key(item):
+            value = item.get(sort_key_name, "")
+            if value is None:
+                value = ""
+            return str(value).lower()
+
+        data.sort(key=get_sort_key, reverse=(self._sort_order == Qt.DescendingOrder))
+
+        self.table.setUpdatesEnabled(False)
+        self.table.setRowCount(0)
+        TableHelper.update_to_table(self.table, data, PromptDictionaryPage.KEYS)
+        self.table.resizeRowsToContents()
+        self.table.setUpdatesEnabled(True)
+        self.table.horizontalHeader().setSortIndicator(self._sort_column_index, self._sort_order)
+        self._reset_search()
+        self.info_toast("", self.tra("表格已按 '{}' {}排序").format(
+            self._get_translated_column_name(logicalIndex),
+            self.tra("升序") if self._sort_order == Qt.AscendingOrder else self.tra("降序")
+        ))
+
+    # 工具栏
+    def _create_search_toolbar(self) -> QWidget:
+        toolbar_widget = QWidget(self)
+        layout = QHBoxLayout(toolbar_widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        # 搜索输入框
+        self.search_input = LineEdit(self)
+        self.search_input.setPlaceholderText(self.tra("搜索表格内容..."))
+        self.search_input.setClearButtonEnabled(True)
+        self.search_input.textChanged.connect(self._on_search_text_changed)
+        layout.addWidget(self.search_input, 1)
+
+        # 搜索字段下拉菜单
+        self.search_field_button = DropDownPushButton(self.tra("全部"), self)
+        self.search_field_menu = RoundMenu(parent=self.search_field_button)
+        all_action = Action(self.tra("全部"))
+        all_action.triggered.connect(lambda: self._set_search_field(-1, self.tra("全部")))
+        self.search_field_menu.addAction(all_action)
+        self.search_field_menu.addSeparator()
+        for i, key in enumerate(PromptDictionaryPage.KEYS):
+            col_name = self._get_translated_column_name(i)
+            action = Action(col_name)
+            action.triggered.connect(lambda checked=False, index=i, name=col_name: self._set_search_field(index, name))
+            self.search_field_menu.addAction(action)
+        self.search_field_button.setMenu(self.search_field_menu)
+        layout.addWidget(self.search_field_button)
+
+        # 搜索结果标签
+        self.search_results_label = BodyLabel("", self)
+        layout.addWidget(self.search_results_label)
+
+        # 导航按钮
+        self.search_prev_button = TransparentToolButton(FluentIcon.UP, self)
+        self.search_prev_button.setToolTip(self.tra("上一个结果"))
+        self.search_prev_button.clicked.connect(self._navigate_previous)
+        self.search_prev_button.setEnabled(False)
+        layout.addWidget(self.search_prev_button)
+
+        self.search_next_button = TransparentToolButton(FluentIcon.DOWN, self)
+        self.search_next_button.setToolTip(self.tra("下一个结果"))
+        self.search_next_button.clicked.connect(self._navigate_next)
+        self.search_next_button.setEnabled(False)
+        layout.addWidget(self.search_next_button)
+
+        layout.addStretch(1) # 将后续按钮推到右侧
+
+        # --- 主操作按钮组 ---
+        self.main_action_buttons_widget = QWidget(self)
+        main_action_layout = QHBoxLayout(self.main_action_buttons_widget)
+        main_action_layout.setContentsMargins(0,0,0,0)
+        main_action_layout.setSpacing(8)
+
+        self.save_button = ToolButton(FluentIcon.SAVE, self)
+        self.save_button.setToolTip(self.tra("保存"))
+        self.save_button.clicked.connect(self.save_data)
+        main_action_layout.addWidget(self.save_button)
+
+        self.reset_button = ToolButton(FluentIcon.DELETE, self)
+        self.reset_button.setToolTip(self.tra("重置"))
+        self.reset_button.clicked.connect(self.reset_data)
+        main_action_layout.addWidget(self.reset_button)
+
+        self.import_button = ToolButton(FluentIcon.DOWNLOAD, self)
+        self.import_button.setToolTip(self.tra("导入"))
+        self.import_button.clicked.connect(self.import_data)
+        main_action_layout.addWidget(self.import_button)
+
+        self.export_button = ToolButton(FluentIcon.SHARE, self)
+        self.export_button.setToolTip(self.tra("导出"))
+        self.export_button.clicked.connect(self.export_data)
+        main_action_layout.addWidget(self.export_button)
+        layout.addWidget(self.main_action_buttons_widget)
+
+        # --- 副操作按钮组 (角色提取和简单翻译) ---
+        self.secondary_action_buttons_widget = QWidget(self)
+        secondary_action_layout = QHBoxLayout(self.secondary_action_buttons_widget)
+        secondary_action_layout.setContentsMargins(0,0,0,0)
+        secondary_action_layout.setSpacing(8)
+
+        self.name_extractor_button = TransparentPushButton(FluentIcon.PEOPLE,self.tra("角色提取"), self)
+        self.name_extractor_button.clicked.connect(self.name_extractor)
+        secondary_action_layout.addWidget(self.name_extractor_button)
+
+        self.glossary_translation_button = TransparentPushButton(FluentIcon.SEND_FILL,self.tra("简单翻译"), self)
+        self.glossary_translation_button.clicked.connect(self.glossary_translation)
+        secondary_action_layout.addWidget(self.glossary_translation_button)
+        layout.addWidget(self.secondary_action_buttons_widget)
+        self.secondary_action_buttons_widget.setVisible(False) # 初始隐藏
+
+        # --- 工具栏切换按钮 ---
+        self.toggle_toolbar_button = TransparentToolButton(FluentIcon.MORE, self)
+        #self.toggle_toolbar_button.setToolTip(self.tra("切换到副工具栏"))
+        self.toggle_toolbar_button.clicked.connect(self._toggle_toolbar_view)
+        layout.addWidget(self.toggle_toolbar_button)
+
+        return toolbar_widget
+
+    # 切换工具栏视图
+    def _toggle_toolbar_view(self):
+        self._secondary_toolbar_visible = not self._secondary_toolbar_visible
+        if self._secondary_toolbar_visible:
+            self.main_action_buttons_widget.setVisible(False)
+            self.secondary_action_buttons_widget.setVisible(True)
+            self.toggle_toolbar_button.setIcon(FluentIcon.MENU) 
+            #self.toggle_toolbar_button.setToolTip(self.tra("切换回主工具栏"))
+        else:
+            self.main_action_buttons_widget.setVisible(True)
+            self.secondary_action_buttons_widget.setVisible(False)
+            self.toggle_toolbar_button.setIcon(FluentIcon.MORE)
+            #self.toggle_toolbar_button.setToolTip(self.tra("切换到副工具栏"))
+
+    # 设置搜索字段
+    def _set_search_field(self, field_index: int, field_name: str):
+        self.search_field_button.setText(field_name)
+        if self._current_search_field_index != field_index:
+            self._current_search_field_index = field_index
+            self._perform_search()
+
+    # 搜索逻辑方法
+    def _on_search_text_changed(self, text: str):
+        if not text.strip():
+             self._reset_search_results()
+             self._update_search_ui()
+             self.table.clearSelection()
+        self._search_timer.start()
+
+    # 重置搜索结果
+    def _reset_search_results(self):
+        self._search_results = []
+        self._current_search_index = -1
+
+    # 重置搜索状态
+    def _reset_search(self):
+        """重置搜索状态，但不影响排序状态。"""
+        self._reset_search_results()
+        if hasattr(self, 'search_input'):
+            self.search_input.clear()
+            self._current_search_field_index = -1
+            if hasattr(self, 'search_field_button'): 
+                 self.search_field_button.setText(self.tra("全部"))
+            self._update_search_ui()
+            if hasattr(self, 'table'): 
+                 self.table.clearSelection()
+
+    # 执行搜索
+    def _perform_search(self):
+        search_text = self.search_input.text().strip().lower()
+        self._reset_search_results() # 清除之前的搜索结果
+
+        if not search_text:
+            self._update_search_ui()
+            if hasattr(self, 'table'): self.table.clearSelection() 
+            return
+
+        target_col = self._current_search_field_index
+        rows = self.table.rowCount()
+        cols = self.table.columnCount()
+
+        for r in range(rows):
+            columns_to_search = range(cols) if target_col == -1 else [target_col]
+            for c in columns_to_search:
+                 # 确保列索引有效
+                if c >= cols: continue 
+                item = self.table.item(r, c)
+                if item and search_text in item.text().lower():
+                    self._search_results.append((r, c))
+                    if target_col != -1: # 如果搜索特定列，则停止检查此行中的其他列
+                         break
+
+        # 如果搜索“全部”导致每行有多个匹配项，则删除重复行
+        if target_col == -1:
+            unique_results = []
+            seen_rows = set()
+            for r, c in self._search_results:
+                if r not in seen_rows:
+                    unique_results.append((r, c)) # 保留该行的第一个列匹配项
+                    seen_rows.add(r)
+            self._search_results = unique_results
+
+
+        if self._search_results:
+            self._navigate_search_result(0) # 转到第一个结果
+        else:
+            self._update_search_ui() # 更新UI以显示“0/0”
+            if hasattr(self, 'table'): self.table.clearSelection() 
+
+    # 更新搜索UI
+    def _update_search_ui(self):
+        count = len(self._search_results)
+        if count > 0:
+            label_text = f"{self._current_search_index + 1}/{count}"
+        else:
+            # 仅当有搜索文本时显示0/0，否则清除标签
+            if hasattr(self, 'search_input') and self.search_input.text().strip(): 
+                label_text = "0/0"
+            else:
+                label_text = "" # 如果没有搜索文本则清除
+
+        if hasattr(self, 'search_results_label'): self.search_results_label.setText(label_text) 
+
+        # 启用/禁用导航按钮
+        can_navigate = count > 1
+        if hasattr(self, 'search_prev_button'): self.search_prev_button.setEnabled(can_navigate and self._current_search_index > 0) 
+        if hasattr(self, 'search_next_button'): self.search_next_button.setEnabled(can_navigate and self._current_search_index < count - 1) 
+        # 如果只有一个结果，则禁用两个按钮
+        if count <= 1:
+            if hasattr(self, 'search_prev_button'): self.search_prev_button.setEnabled(False) 
+            if hasattr(self, 'search_next_button'): self.search_next_button.setEnabled(False) 
+
+    # 导航上一个结果
+    def _navigate_previous(self):
+        if self._search_results and self._current_search_index > 0:
+            self._navigate_search_result(self._current_search_index - 1)
+
+    # 导航下一个结果
+    def _navigate_next(self):
+        if self._search_results and self._current_search_index < len(self._search_results) - 1:
+            self._navigate_search_result(self._current_search_index + 1)
+
+    # 导航到搜索结果
+    def _navigate_search_result(self, index: int):
+        if not self._search_results or not (0 <= index < len(self._search_results)):
+            return
+
+        self._current_search_index = index
+        row, col = self._search_results[index]
+
+        # 确保行/列仍然有效
+        if hasattr(self, 'table') and row < self.table.rowCount() and col < self.table.columnCount(): 
+            item_to_select = self.table.item(row, 0) 
+            if item_to_select:
+                self.table.clearSelection() # 首先清除之前的选择
+                self.table.setCurrentCell(row, col) # 选择特定的单元格
+                self.table.selectRow(row) # 选择包含结果的整行
+                self.table.scrollToItem(item_to_select, QAbstractItemView.ScrollHint.PositionAtCenter) # 平滑滚动
+
+        self._update_search_ui() # 更新标签和按钮状态
+
+    # 保存方法
+    def save_data(self) -> None:
+        config = self.load_config()
+        config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+        self.save_config(config)
+        self.success_toast("", self.tra("数据已保存") + " ... ")
+
+    # 重置方法
+    def reset_data(self) -> None:
+        info_cont1 = self.tra("是否确认重置为默认数据") + " ... ？"
+        message_box = MessageBox(self.tra("警告"), info_cont1, self.window())
+        message_box.yesButton.setText(self.tra("确认"))
+        message_box.cancelButton.setText(self.tra("取消"))
+
+        if not message_box.exec():
+            return
+
+        self.table.setRowCount(0)
+        config = self.load_config()
+        config["prompt_dictionary_data"] = copy.deepcopy(self.default.get("prompt_dictionary_data", []))
+        self.save_config(config)
         TableHelper.update_to_table(self.table, config.get("prompt_dictionary_data"), PromptDictionaryPage.KEYS)
+        self.table.resizeRowsToContents()
+        self._reset_search() # 重置后重置搜索
+        self._reset_sort_indicator() # 重置后重置排序
+        self.success_toast("", self.tra("数据已重置") + " ... ")
 
-    # 底部
-    def add_widget_foot(self, parent: QLayout, config: dict, window: AppFluentWindow) -> None:
-        self.command_bar_card = CommandBarCard()
-        parent.addWidget(self.command_bar_card)
+    # 导入方法
+    def import_data(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(self, self.tra("选择文件"), "", "json 文件 (*.json);;xlsx 文件 (*.xlsx)")
+        if not isinstance(path, str) or path == "":
+            return
+        data = TableHelper.load_from_file(path, PromptDictionaryPage.KEYS)
+        config = self.load_config()
 
-        # 添加命令
-        self.add_command_bar_action_import(self.command_bar_card, config, window)
-        self.add_command_bar_action_export(self.command_bar_card, config, window)
-        self.command_bar_card.add_separator()
-        self.add_command_bar_action_insert(self.command_bar_card, config, window)  # 新增插入行按钮
-        self.add_command_bar_action_removeselectedline(self.command_bar_card, config, window)
-        self.command_bar_card.add_separator()
-        self.add_command_bar_action_save(self.command_bar_card, config, window)
-        self.add_command_bar_action_reset(self.command_bar_card, config, window)
-        self.command_bar_card.add_separator()
-        self.add_command_bar_name_extractor(self.command_bar_card, config, window)
-        self.add_command_bar_glossary_translation(self.command_bar_card, config, window)
+        # 去重逻辑
+        current_data = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+        current_src_set = {item['src'] for item in current_data if item.get('src')} # 处理潜在的空 src
+        new_data_filtered = [item for item in data if item.get('src') and item['src'] not in current_src_set] # 确保导入的项目具有 src
 
+        if not new_data_filtered and data: # 如果所有导入的项目都已存在，则通知
+            self.info_toast(self.tra("信息"), self.tra("导入的数据项均已存在于当前表格中"))
+            return
+        elif not new_data_filtered and not data: # 如果文件为空或格式无效，则通知
+            self.warning_toast(self.tra("警告"), self.tra("未从文件中加载到有效数据"))
+            return
 
-    # 导入
-    def add_command_bar_action_import(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
+        # 更新并保存
+        # 合并现有数据（来自表格状态）+ 新的已过滤数据
+        combined_data = current_data + new_data_filtered
+        config["prompt_dictionary_data"] = combined_data # 直接更新配置
 
-        def triggered() -> None:
-            # 选择文件
-            path, _ = QFileDialog.getOpenFileName(None, self.tra("选择文件"), "", "json 文件 (*.json);;xlsx 文件 (*.xlsx)")
-            if not isinstance(path, str) or path == "":
+        # 在再次从表格保存配置*之前*更新表格
+        TableHelper.update_to_table(self.table, config["prompt_dictionary_data"], PromptDictionaryPage.KEYS)
+        self.table.resizeRowsToContents() # 导入后调整行高
+
+        # 现在将可能已修改的表格状态保存回配置
+        config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+        self.save_config(config)
+        self._reset_search() # 导入后重置搜索
+        self._reset_sort_indicator() # 导入后重置排序
+        self.success_toast("", self.tra("数据已导入并更新") + f" ({len(new_data_filtered)} {self.tra('项')})...")
+
+    # 导出方法
+    def export_data(self) -> None:
+        data = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+        if not data:
+            self.warning_toast("", self.tra("表格中没有数据可导出"))
+            return
+
+        default_filename = self.tra("导出_术语表") + ".json"
+        path, _ = QFileDialog.getSaveFileName(self, self.tra("导出文件"), default_filename, "JSON 文件 (*.json)")
+
+        if not path:
+            return
+
+        if path.lower().endswith(".json"):
+            with open(path, "w", encoding="utf-8") as writer:
+                writer.write(json.dumps(data, indent=4, ensure_ascii=False))
+        else:
+            self.error_toast(self.tra("导出失败"), self.tra("不支持的文件扩展名"))
+            return
+
+        self.success_toast("", self.tra("数据已导出到") + f": {path}")
+
+    # 角色提取方法
+    def name_extractor(self) -> None:
+        path = QFileDialog.getExistingDirectory(self, self.tra("选择文件夹"), "")
+        if not path:
+            return
+
+        try:
+            data = NameExtractor.extract_names_from_folder(self, path)
+            if not data:
+                self.info_toast(self.tra("信息"), self.tra("在指定文件夹中未找到符合条件的角色名"))
                 return
 
-            # 从文件加载数据
-            data = TableHelper.load_from_file(path, PromptDictionaryPage.KEYS)
-
-            # 读取配置文件
             config = self.load_config()
-            config["prompt_dictionary_data"].extend(data)
+            current_data = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+            current_src_set = {item['src'] for item in current_data if item.get('src')}
+            new_data_filtered = [item for item in data if item.get('src') and item['src'] not in current_src_set]
 
-            # 向表格更新数据
+            if not new_data_filtered:
+                self.info_toast(self.tra("信息"), self.tra("均已存在于术语表中"))
+                return
+
+            combined_data = current_data + new_data_filtered
+            config["prompt_dictionary_data"] = combined_data
+
             TableHelper.update_to_table(self.table, config["prompt_dictionary_data"], PromptDictionaryPage.KEYS)
+            self.table.resizeRowsToContents()
 
-            # 从表格加载数据（去重后）
             config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+            self.save_config(config)
+            self._reset_search()
+            self._reset_sort_indicator()
+            self.success_toast("", self.tra("术语信息已提取并添加") + f" ({len(new_data_filtered)} {self.tra('项')})...")
 
-            # 保存配置文件
-            config = self.save_config(config)
+        except Exception as e:
+            self.error_toast(self.tra("提取失败"), str(e))
+            self.logger.error(f"Name extraction failed: {e}", exc_info=True)
 
-            # 弹出提示
-            info_cont1 = self.tra("数据已导入") + "..."
-            self.success_toast("", info_cont1)
+    # 简单翻译方法
+    def glossary_translation(self) -> None:
+        if Base.work_status == Base.STATUS.IDLE:
+            Base.work_status = Base.STATUS.GLOSS_TASK
+            data = {}
+            data["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
 
-        parent.add_action(
-            Action(FluentIcon.DOWNLOAD, self.tra("导入"), parent, triggered = triggered),
-        )
+            if not any(item.get('src') and not item.get('dst') for item in data["prompt_dictionary_data"]):
+                    self.info_toast(self.tra("提示"), self.tra("没有需要翻译的术语"))
+                    Base.work_status = Base.STATUS.IDLE
+                    return
 
-    # 导出
-    def add_command_bar_action_export(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
+            self.emit(Base.EVENT.GLOSS_TASK_START, data)
+            self.info_toast(self.tra("提示"), self.tra("术语表翻译任务已开始..."))
+        else:
+            self.warning_toast("", self.tra("软件正在执行其他任务中，请稍后再试"))
 
-        def triggered() -> None:
-            # 加载配置文件
-            config = self.load_config()
-
-            # 从表格加载数据
-            data = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
-
-            # 导出文件
-            info_cont1 = self.tra("导出_术语表")+ ".json"
-            with open(info_cont1, "w", encoding = "utf-8") as writer:
-                writer.write(json.dumps(data, indent = 4, ensure_ascii = False))
-
-            # 弹出提示
-            info_cont2 = self.tra("数据已导出到应用根目录") + "..."
-            self.success_toast("", info_cont2)
-
-        parent.add_action(
-            Action(FluentIcon.SHARE, self.tra("导出"), parent, triggered = triggered),
-        )
-
-
-    # 保存
-    def add_command_bar_action_save(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
-
-        def triggered() -> None:
-            # 加载配置文件
-            config = self.load_config()
-
-            # 从表格加载数据
-            config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
-
-            # 清空表格
-            self.table.clearContents()
-
-            # 向表格更新数据
-            TableHelper.update_to_table(self.table, config["prompt_dictionary_data"], PromptDictionaryPage.KEYS)
-
-            # 从表格加载数据（去重后）
-            config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
-
-            # 保存配置文件
-            config = self.save_config(config)
-
-            # 弹出提示
-            info_cont1 = self.tra("数据已保存")+ " ... "
-            self.success_toast("", info_cont1)
-
-        parent.add_action(
-            Action(FluentIcon.SAVE, self.tra("保存"), parent, triggered = triggered),
-        )
-
-    # 重置
-    def add_command_bar_action_reset(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
-
-        def triggered() -> None:
-            info_cont1 = self.tra("是否确认重置为默认数据")  + " ... ？"
-            message_box = MessageBox("Warning", info_cont1, window)
-            message_box.yesButton.setText(self.tra("确认"))
-            message_box.cancelButton.setText(self.tra("取消") )
-
-            if not message_box.exec():
-                return
-
-            # 清空表格
-            self.table.clearContents()
-
-            # 加载配置文件
-            config = self.load_config()
-
-            # 加载默认设置
-            config["prompt_dictionary_data"] = self.default.get("prompt_dictionary_data")
-
-            # 保存配置文件
-            config = self.save_config(config)
-
-            # 向表格更新数据
-            TableHelper.update_to_table(self.table, config.get("prompt_dictionary_data"), PromptDictionaryPage.KEYS)
-
-            # 弹出提示
-            info_cont2 = self.tra("数据已重置")  + " ... "
-            self.success_toast("", info_cont2)
-
-        parent.add_action(
-            Action(FluentIcon.DELETE, self.tra("重置"), parent, triggered = triggered),
-        )
-
-    # 移除选取行
-    def add_command_bar_action_removeselectedline(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
-        def triggered() -> None:
-            indices = self.table.selectionModel().selectedRows()
-            if not indices:
-                return
-            
-            for index in reversed(sorted(indices)):
-                self.table.removeRow(index.row())
-
-            self.table.selectRow(-1)
-
-            # 提示操作完成
-            info_cont = self.tra("选取行已移除") + "..."
-            self.success_toast("", info_cont)
-
-
-        parent.add_action(
-            Action(FluentIcon.REMOVE_FROM, self.tra("移除选取行"), parent, triggered = triggered),
-        )
-
-    # 插入行
-    def add_command_bar_action_insert(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
-
-        def triggered() -> None:
-            # 获取所有选中的行号（去重）
-            selected_rows = {item.row() for item in self.table.selectedItems()}
-            # 按降序排序以正确处理多选插入
-            sorted_rows = sorted(selected_rows, reverse=True)
-
-            if not sorted_rows:
-                # 没有选中行时在末尾添加
-                self.table.setRowCount(self.table.rowCount() + 1)
-            else:
-                for row in sorted_rows:
-                    self.table.insertRow(row + 1)  # 在选中行下方插入
-
-            # 提示操作完成
-            info_cont = self.tra("新行已插入") + "..."
-            self.success_toast("", info_cont)
-
-        # 创建并添加Action到命令栏
-        parent.add_action(
-            Action(FluentIcon.ADD_TO, self.tra("插入行"), parent, triggered=triggered)
-        )
-
-    # 一键提取
-    def add_command_bar_name_extractor(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
-
-        def triggered() -> None:
-            # 选择文件夹
-            path = QFileDialog.getExistingDirectory(None,  self.tra("选择文件夹"), "")
-            if path == None or path == "":
-                return
-
-            # 从文件加载数据
-            data = NameExtractor.extract_names_from_folder(self,path)
-
-            # 读取配置文件
-            config = self.load_config()
-            config["prompt_dictionary_data"].extend(data)
-
-            # 向表格更新数据
-            TableHelper.update_to_table(self.table, config["prompt_dictionary_data"], PromptDictionaryPage.KEYS)
-
-            # 从表格加载数据（去重后）
-            config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
-
-            # 保存配置文件
-            config = self.save_config(config)
-
-
-            # 弹出提示
-            info_cont1 = self.tra("术语信息已提取") + "..."
-            self.success_toast("", info_cont1)
-
-        parent.add_action(
-            Action(FluentIcon.PEOPLE, self.tra("角色提取"), parent, triggered = triggered),
-        )
-
-
-    # 一键翻译
-    def add_command_bar_glossary_translation(self, parent: CommandBarCard, config: dict, window: AppFluentWindow) -> None:
-
-        def triggered() -> None:
-            if Base.work_status == Base.STATUS.IDLE:
-                # 更新运行状态
-                Base.work_status = Base.STATUS.GLOSS_TRANSLATION
-
-                # 获取配置参数
-                config = self.load_config()
-                platform_tag = config.get(f"target_platform")
-                platform = config.get("platforms").get(platform_tag)
-                data = copy.deepcopy(platform)
-                data["proxy_url"] = config.get("proxy_url")
-                data["proxy_enable"] = config.get("proxy_enable")
-                data["target_language"] = config.get("target_language")
-
-                # 获取表格数据
-                data["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
-
-                # 触发事件
-                self.emit(Base.EVENT.GLOSS_TRANSLATION_START, data)
-            else:
-                self.warning_toast("", self.tra("软件正在执行其他任务中，请稍后再试"))
-
-        parent.add_action(
-            Action(FluentIcon.SEND_FILL, self.tra("简单翻译"), parent, triggered = triggered),
-        )
-
-
-    # 术语表翻译完成
+    # 简单翻译完成订阅方法
     def glossary_translation_done(self, event: int, data: dict):
-        # 更新运行状态
         Base.work_status = Base.STATUS.IDLE
-
-        # 分析返回数据的运行状态
         status = data.get("status")
-        if status =="null":
-            # 运行状态异常
+
+        if status == "null":
             self.error_toast("", self.tra("术语表内容为空") + "...")
             return
         elif status == "error":
-            # 运行状态异常
-            self.error_toast("", self.tra("术语表翻译失败") + "...")
+            error_msg = data.get("message", self.tra("未知错误"))
+            self.error_toast(self.tra("术语表翻译失败"), error_msg + "...")
             return
         elif status == "success":
-            # 运行状态正常
-            self.success_toast("", self.tra("术语表翻译成功") + "...")
-            # 获取翻译结果
             updated_data = data.get("updated_data")
+            if not updated_data:
+                self.warning_toast(self.tra("完成"), self.tra("翻译完成，但没有数据被更新"))
+                return
 
-            # 从表格加载数据
             prompt_dictionary_data_table = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
+            updated_map = {item['src']: item['dst'] for item in updated_data if item.get('src') and item.get('dst')}
 
-            # 根据翻译后数据，合并更新表格数据
+            something_updated = False
             for i in range(len(prompt_dictionary_data_table)):
-                for j in range(len(updated_data)):
-                    if (prompt_dictionary_data_table[i]["src"] == updated_data[j]["src"]) and (not prompt_dictionary_data_table[i]["dst"]) :
-                        prompt_dictionary_data_table[i]["dst"] = updated_data[j]["dst"]
-                        break
+                src_text = prompt_dictionary_data_table[i].get("src")
+                current_dst = prompt_dictionary_data_table[i].get("dst")
+                if src_text in updated_map and (not current_dst or current_dst.strip() == ""):
+                    prompt_dictionary_data_table[i]["dst"] = updated_map[src_text]
+                    something_updated = True
 
-            # 清空表格
-            self.table.clearContents()
+            if something_updated:
+                self.table.setUpdatesEnabled(False)
+                TableHelper.update_to_table(self.table, prompt_dictionary_data_table, PromptDictionaryPage.KEYS)
+                self.table.resizeRowsToContents()
+                self.table.setUpdatesEnabled(True)
 
-            # 向表格更新数据
-            TableHelper.update_to_table(self.table, prompt_dictionary_data_table, PromptDictionaryPage.KEYS)
-
-            # 加载配置文件
-            config = self.load_config()
-
-            # 从表格加载数据（去重后）
-            config["prompt_dictionary_data"] = TableHelper.load_from_table(self.table, PromptDictionaryPage.KEYS)
-
-            # 保存配置文件
-            config = self.save_config(config)
+                config = self.load_config()
+                config["prompt_dictionary_data"] = prompt_dictionary_data_table
+                self.save_config(config)
+                self._reset_search()
+                self._reset_sort_indicator()
+                self.success_toast("", self.tra("术语表翻译成功并已更新") + "...")
