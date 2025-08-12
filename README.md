@@ -1,6 +1,6 @@
 <div align="center">
   <a href="https://github.com/NEKOparapa/AiNiee-chatgpt">
-    <img src="https://github.com/NEKOparapa/AiNiee-chatgpt/blob/main/Example%20image/logo.png" width=60% height=60%>
+    <img src="https://github.com/NEKOparapa/AiNiee-chatgpt/blob/main/Example%20image/logo.png" width=60%>
   </a>
 </div>
 
@@ -26,11 +26,11 @@
 
 * **智能高效，省时省心**
     * 🚀 **一键操作**：一拖一点，自动识别文件与语言，无需设置。
-    * ⏱️ **极速翻译**：喝杯奶茶的工夫，就能拿到译文。
+    * ⏱️ **极速翻译**：喝杯可乐的工夫，就能拿到译文。
 
 * **长文优化，质量出众**
     * 🎯 **突破局限**：采用轻盈翻译格式、思维链翻译、AI 术语表、上下文关联等技术，确保长文本翻译的连贯性与准确性。
-    * 💎 **质量追求**：支持基础提示、角色介绍、背景设定、翻译风格等提示词调整，拥有[双子星翻译](https://github.com/NEKOparapa/AiNiee/wiki/%E5%8F%8C%E5%AD%90%E6%98%9F%E7%BF%BB%E8%AF%91%E4%BB%8B%E7%BB%8D)功能，满足对翻译质量有更高要求的用户。
+    * 💎 **质量追求**：支持 基础提示、角色介绍、背景设定、翻译风格 等提示词调整，拥有 一键AI润色、一键AI排版、一键提取术语 等功能，满足对翻译质量有更高要求的用户。
 
 ---
 
@@ -42,11 +42,12 @@
   - 在线接口：需付费但性价比很高，无显卡要求，全语言支持，[接口设置说明 - DeepSeek](https://github.com/NEKOparapa/AiNiee/wiki/QuickStartDeepSeek)
   - 在线接口：同上，如果Deepseek官网无法正常使用，可换该接口，[接口设置说明 - 火山引擎](https://github.com/NEKOparapa/AiNiee/wiki/QuickStartHuo)
 
-* **第二步：项目设置**
+
+* **第二步：拖入文件夹**
   > <img src="https://raw.githubusercontent.com/NEKOparapa/AiNiee/main/Example%20image/三步走/第二步.png">
   
-  - API接口平台：选择你第一步设置的接口名字<br>
   - 输入文件夹：将原文文件单独放置新的文件夹，并将该文件夹拖入框内。小说、字幕、文档可直接进行翻译，游戏需要文本提取工具进行配合。<br>
+
 
 * **第三步：开始翻译**
 
@@ -81,15 +82,6 @@
       |[RenPy SDK](https://www.renpy.org/latest.html)|上手中等，功能强大，推荐大佬使用|renpy导出文件|
       |[Translator++](https://dreamsavior.net/download/)|上手中等，功能强大，推荐大佬使用|T++导出文件或Trans工程文件|
       |[SExtractor](https://github.com/satan53x/SExtractor)|上手复杂，功能强大，推荐大佬使用|Mtool或者VNText导出文件|
-
-
- * **`🚡术语表预提取工具`**
-
-      |工具名|说明|
-      |:----:|:-----:|
-      |[小说工具箱](https://books.fishhawk.top/workspace/toolbox)|术语表辅助制作工具|
-      |[KeywordGacha](https://github.com/neavo/KeywordGacha) |使用 AI 技术来自动生成实体词语表的翻译辅助工具|
-
 
  * **`🧰本地模型运行工具`**
 
@@ -153,7 +145,6 @@
 </summary>
 
 - [功能 ‐ 接口管理](https://github.com/NEKOparapa/AiNiee/wiki/%E5%8A%9F%E8%83%BD%E2%80%90%E6%8E%A5%E5%8F%A3%E7%AE%A1%E7%90%86)
-- [功能 ‐ 双子星翻译](https://github.com/NEKOparapa/AiNiee/wiki/%E5%8F%8C%E5%AD%90%E6%98%9F%E7%BF%BB%E8%AF%91%E4%BB%8B%E7%BB%8D)
 
 </details>
 

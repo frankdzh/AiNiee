@@ -33,6 +33,19 @@ class CacheManager(Base):
         self.subscribe(Base.EVENT.APP_SHUT_DOWN, self.app_shut_down)
 
     def start_interval_saving(self, event: int, data: dict):
+                # 如果是继续任务，则在开始前保存并重载缓存
+        if data.get("continue_status") is True:
+            config = self.load_config()
+            output_path = config.get("label_output_path", "./output")
+            if output_path and os.path.isdir(output_path):
+                # 强制保存当前内存中的缓存状态到磁盘，以包含编排表的修改
+               if hasattr(self, "project"): #判断内容是否变化                
+                self.save_to_file_require_path = output_path 
+                self.save_to_file() 
+                
+                # 从磁盘重载缓存，确保后续任务基于最新的状态
+                self.load_from_file(output_path)
+        
         # 定时器
         self.save_to_file_stop_flag = False
         threading.Thread(target=self.save_to_file_tick, daemon=True).start()
@@ -43,7 +56,8 @@ class CacheManager(Base):
 
     # 保存缓存到文件
     def save_to_file(self) -> None:
-        """保存缓存到文件，缓存结构：
+        """保存缓存到文件，采用原子写入方式防止竞态条件
+        缓存结构：
         {
             "project_id": "aaa",
             "project_type": "Type",
@@ -60,22 +74,38 @@ class CacheManager(Base):
             }
         }
         """
-        path = os.path.join(self.save_to_file_require_path, "cache", "AinieeCacheData.json")
+        cache_dir = os.path.join(self.save_to_file_require_path, "cache")
+        path = os.path.join(cache_dir, "AinieeCacheData.json")
+        # 定义临时文件路径，确保在同一文件系统下以支持原子性替换
+        tmp_path = path + f".{os.getpid()}.tmp"
+
         with self.file_lock:
-            os.makedirs(os.path.dirname(path), exist_ok=True)
-            content_bytes = msgspec.json.encode(self.project)
-            with open(path, "wb") as writer:
-                writer.write(content_bytes)
+            try:
+                os.makedirs(cache_dir, exist_ok=True)
+                content_bytes = msgspec.json.encode(self.project)
 
-            # 写入项目整体翻译状态文件
-            total_line = self.project.stats_data.total_line # 获取需翻译总行数
-            line = self.project.stats_data.line # 获取已翻译行数
-            project_name = self.project.project_name # 获取项目名字
-            json_data = {"total_line": total_line, "line": line, "project_name": project_name }
+                # 先将完整内容写入临时文件
+                with open(tmp_path, "wb") as writer:
+                    writer.write(content_bytes)
 
-            json_path = os.path.join(self.save_to_file_require_path, "cache", "ProjectStatistics.json")
-            with open(json_path, "w", encoding="utf-8") as writer:
-                json.dump(json_data, writer, ensure_ascii=False, indent=4)  # 直接写入 JSON 数据
+                # 使用原子操作替换旧文件。这能保证其他进程/线程
+                # 要么读到旧的完整文件，要么读到新的完整文件，绝不会读到一半。
+                os.replace(tmp_path, path)
+
+                # 写入项目整体翻译状态文件
+                total_line = self.project.stats_data.total_line # 获取需翻译总行数
+                line = self.project.stats_data.line # 获取已翻译行数
+                project_name = self.project.project_name # 获取项目名字
+                json_data = {"total_line": total_line, "line": line, "project_name": project_name}
+
+                json_path = os.path.join(cache_dir, "ProjectStatistics.json")
+                with open(json_path, "w", encoding="utf-8") as writer:
+                    json.dump(json_data, writer, ensure_ascii=False, indent=4)
+            finally:
+                # 确保临时文件在任何情况下（包括异常）都会被清理
+                if os.path.exists(tmp_path):
+                    os.remove(tmp_path)
+
 
     # 保存缓存到文件的定时任务
     def save_to_file_tick(self) -> None:
@@ -216,63 +246,60 @@ class CacheManager(Base):
     # 生成待翻译片段
     def generate_item_chunks(self, limit_type: str, limit_count: int, previous_line_count: int, task_mode) -> \
             Tuple[List[List[CacheItem]], List[List[CacheItem]], List[str]]:
-        chunks, previous_chunks, file_paths = [], [], []  # 添加 file_paths 初始化
+        chunks, previous_chunks, file_paths = [], [], []
 
-        # 遍历所有文件
         for file in self.project.files.values():
-
-            # 根据任务模式筛选条目
-            if task_mode == TaskType.TRANSLATION : # 选取未翻译条目
+            # 1. 筛选出当前任务需要的条目
+            if task_mode == TaskType.TRANSLATION:
                 items = [item for item in file.items if item.translation_status == TranslationStatus.UNTRANSLATED]
-            elif task_mode == TaskType.POLISH: # 选取已翻译条目
+            elif task_mode == TaskType.POLISH:
                 items = [item for item in file.items if item.translation_status == TranslationStatus.TRANSLATED]
+            else:
+                items = []
 
-            # 如果没有需要翻译的条目，则跳过
             if not items:
                 continue
 
             current_chunk, current_length = [], 0
+            # 2. 记录当前 chunk 在 `items` 这个筛选后列表中的起始索引
+            chunk_start_idx_in_filtered_list = 0
 
-            # 遍历该文件的所有条目
-            for item in items:
-                # 计算当前条目的长度
+            # 3. 使用 enumerate 同时获取筛选后列表的索引 `i` 和条目 `item`
+            for i, item in enumerate(items):
                 item_length = item.get_token_count(item.source_text) if limit_type == "token" else 1
 
-                # 如果当前片段长度加上当前条目长度超过限制，则将当前片段添加到结果列表中，并重置当前片段
+                # 当一个新 chunk 开始时，记录它的起始索引 `i`
+                if not current_chunk:
+                    chunk_start_idx_in_filtered_list = i
+
+                # 如果当前 chunk 满了，提交它
                 if current_chunk and (current_length + item_length > limit_count):
-                    # 添加到原文片段列表
                     chunks.append(current_chunk)
-
-                    # 生成上文数据片段
+                    # 4. 使用记录的、相对于 `items` 列表的正确索引来获取上文
                     previous_chunks.append(
-                        self.generate_previous_chunks(items, previous_line_count, file.index_of(current_chunk[0].text_index))
+                        self.generate_previous_chunks(items, previous_line_count, chunk_start_idx_in_filtered_list)
                     )
+                    file_paths.append(file.storage_path)
 
-                    # 添加chunk对应的文件路径
-                    file_paths.append(file.storage_path)  # 添加文件路径记录
-
-                    # 重置片段暂存容器
+                    # 重置，为下一个 chunk 做准备
                     current_chunk, current_length = [], 0
+                    # 再次记录新 chunk 的起始索引
+                    chunk_start_idx_in_filtered_list = i
 
-                # 添加当前条目
+                # 添加当前条目到 chunk
                 current_chunk.append(item)
                 current_length += item_length
 
-            # 处理最后一个未添加到 chunks 的片段
+            # 处理循环结束后剩余的最后一个 chunk
             if current_chunk:
-                # 添加到原文片段列表
                 chunks.append(current_chunk)
-
-                # 生成上文数据片段
+                # 同样使用记录的正确索引
                 previous_chunks.append(
-                    self.generate_previous_chunks(items, previous_line_count, file.index_of(current_chunk[0].text_index))
+                    self.generate_previous_chunks(items, previous_line_count, chunk_start_idx_in_filtered_list)
                 )
+                file_paths.append(file.storage_path)
 
-                # 添加chunk对应的文件路径
-                file_paths.append(file.storage_path)  # 添加文件路径记录
-
-        # 返回结果列表
-        return chunks, previous_chunks, file_paths 
+        return chunks, previous_chunks, file_paths
 
 
     # 获取文件层级结构
@@ -321,20 +348,23 @@ class CacheManager(Base):
             # 修改译文
             elif field_name == 'translated_text':
                 item_to_update.translated_text = new_text
-                # 如果原文和译文不同，则标记为已翻译
-                if new_text and new_text.strip():
-                    if item_to_update.source_text != new_text:
-                            item_to_update.translation_status = TranslationStatus.TRANSLATED
+                # 如果译文被清空，状态应重置为未翻译，同时清空润文
+                if not new_text or not new_text.strip():
+                    item_to_update.translation_status = TranslationStatus.UNTRANSLATED
+                    item_to_update.polished_text = ""
+                # 如果有译文内容，则标记为已翻译
+                else:
+                    item_to_update.translation_status = TranslationStatus.TRANSLATED
 
             # 修改润文
             elif field_name == 'polished_text':
                 item_to_update.polished_text = new_text
-                # 只要有润文，就标记为已润色
-                if new_text and new_text.strip():
+                # 如果润文被清空，状态应回退到已翻译
+                if not new_text or not new_text.strip():
+                    item_to_update.translation_status = TranslationStatus.TRANSLATED
+                # 如果有润文内容，则标记为已润色
+                else:
                     item_to_update.translation_status = TranslationStatus.POLISHED
-            else:
-                print(f"Error: 不支持更新字段 {field_name}")
-                return
 
     # 缓存重编排方法
     def reformat_and_splice_cache(self, file_path: str, formatted_data: dict, selected_item_indices: list[int]) -> list[CacheItem] | None:
@@ -393,8 +423,8 @@ class CacheManager(Base):
 
             # 构建最终的 item 列表
             final_items = (
-                original_items[:start_pos] + 
-                newly_created_items + 
+                original_items[:start_pos] +
+                newly_created_items +
                 original_items[end_pos + 1:]
             )
 
@@ -406,7 +436,7 @@ class CacheManager(Base):
             return final_items
 
     # 缓存全搜索方法
-    def search_items(self, query: str, scope: str, is_regex: bool) -> list:
+    def search_items(self, query: str, scope: str, is_regex: bool, search_flagged: bool) -> list:
         """
         在整个项目中搜索条目。
 
@@ -414,6 +444,7 @@ class CacheManager(Base):
             query (str): 搜索查询字符串。
             scope (str): 搜索范围 ('all', 'source_text', 'translated_text', 'polished_text')。
             is_regex (bool): 是否使用正则表达式。
+            search_flagged (bool): 是否仅搜索被标记的行。
 
         Returns:
             list: 包含元组 (file_path, original_row_num, CacheItem) 的结果列表。
@@ -442,6 +473,29 @@ class CacheManager(Base):
         with self.file_lock:
             for file_path, cache_file in self.project.files.items():
                 for item_index, item in enumerate(cache_file.items):
+                    # 如果要求搜索标记行，则先进行标记过滤
+                    if search_flagged:
+                        is_item_flagged = False
+                        if item.extra:
+                            if scope == 'translated_text':
+                                is_item_flagged = item.extra.get('language_mismatch_translation', False)
+                            elif scope == 'polished_text':
+                                is_item_flagged = item.extra.get('language_mismatch_polish', False)
+                            elif scope == 'all':
+                                is_item_flagged = (item.extra.get('language_mismatch_translation', False) or
+                                                   item.extra.get('language_mismatch_polish', False))
+                            # 对于 'source_text' 范围, is_item_flagged 保持 False, 自动跳过
+
+                        if not is_item_flagged:
+                            continue  # 如果不满足标记条件，则直接跳到下一个条目
+
+                    # 通过标记过滤后，再执行文本/正则搜索
+                    # 如果查询为空，则所有通过标记过滤的条目都匹配
+                    if not query.strip():
+                        # 仅在search_flagged为True时，空查询才有意义（即列出所有标记行）
+                        if search_flagged:
+                             results.append((file_path, item_index + 1, item))
+                        continue # 否则，空查询不匹配任何内容                    
                     found = False
                     for field_name in fields_to_check:
                         text_to_check = getattr(item, field_name, None)
